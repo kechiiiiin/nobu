@@ -1,0 +1,27 @@
+{
+  "name": "nobu",
+  "version": "0.1.0",
+  "description": "NoBu（のーぶ）: 読んだ本・読みたい本を記録する個人用の本棚（Cloudflare Workers + D1）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "dev": "wrangler d1 migrations apply nobu --local && wrangler dev --local --ip 127.0.0.1 --port 8787 --local-upstream 127.0.0.1:8787 --define __LOCAL_DEV__:true",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run build:web && npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "barcode-detector": "^3.2.2",
+    "hono": "^4.13.8",
+    "jose": "^6.2.12",
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260922.1",
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "wrangler": "4.131.2"
+  }
+}

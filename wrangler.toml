@@ -1,0 +1,43 @@
+name = "nobu"
+main = "src/index.ts"
+# wrangler 4.131.2 同梱の workerd が対応する日付（これより新しいとローカルが起動しない）
+compatibility_date = "2026-08-22"
+
+# workers.dev の素のホスト名を生やさない。公開口は Access で守った Custom Domain だけ。
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "nobu.kechiiiiin.com"
+custom_domain = true
+
+# 画面（web/ を esbuild で public/build/ へ）。wrangler dev / deploy の前に走る
+[build]
+command = "node scripts/build-web.mjs"
+watch_dir = ["src", "web", "shared"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# 知らないパス（/books/12 など）は index.html を返す（画面側のルーティング）
+not_found_handling = "single-page-application"
+# ⚠️ 静的ファイルも Worker を先に通す（Access JWT の検証を飛ばさせない）
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nobu"
+database_id = "a4998b6e-21c3-47f0-8ee6-72813f6a563c"
+migrations_dir = "migrations"
+
+[vars]
+# 楽天へのサーバー間呼び出しで名乗る自サイト（楽天の「許可された Web サイト」に登録するもの）
+RAKUTEN_REFERER = "https://nobu.kechiiiiin.com/"
+
+[observability]
+enabled = true
+
+# 秘密は `wrangler secret put` で入れる（ローカルは .dev.vars）:
+#   CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD / ALLOWED_EMAILS
+#   RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY（未設定なら楽天を飛ばして NDL・openBD・版元ドットコムだけで動く）
+# ⚠️ DEV_BYPASS_AUTH をここ（[vars]）に書かない。CI が検査して落とす。

@@ -1,0 +1,66 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+# マイグレーションの途中で取り消されないよう、後続は待たせる
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 本番設定に迂回スイッチが無いこと
+        run: |
+          if grep -n "DEV_BYPASS_AUTH" wrangler.toml | grep -v '^\s*[0-9]*:\s*#'; then
+            echo "::error::wrangler.toml に DEV_BYPASS_AUTH がある（本番で認証を迂回させない）"; exit 1
+          fi
+          if grep -n "__LOCAL_DEV__" wrangler.toml | grep -v '^\s*[0-9]*:\s*#'; then
+            echo "::error::wrangler.toml に __LOCAL_DEV__ がある（本番ビルドで迂回定数を立てない）"; exit 1
+          fi
+          if grep -n '^\[define\]' wrangler.toml; then
+            echo "::error::wrangler.toml に [define] セクションがある"; exit 1
+          fi
+      - run: npm run check
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: D1 migrations（デプロイより先に）
+        uses: cloudflare/wrangler-action@v4
+        with:
+          # package.json の devDependencies.wrangler と揃える
+          wranglerVersion: "4.131.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply nobu --remote
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          wranglerVersion: "4.131.2"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
