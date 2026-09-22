@@ -18,10 +18,15 @@ import {
   listBooks,
   ownedMap,
   undoEvent,
+  addSession,
+  editSession,
+  deleteSession,
+  SessionDateError,
   type BookEdit,
   type NewBook,
 } from "./books.ts";
-import { isStatus, type AddResponse, type Candidate, type SearchResponse } from "../shared/types.ts";
+import { isStatus, type AddResponse, type Candidate, type PatchResponse, type ReadingSession, type SearchResponse } from "../shared/types.ts";
+import { isDateOnly, jstToday } from "../shared/dates.ts";
 import { toIsbn13 } from "../shared/isbn.ts";
 
 const CSP = [
@@ -150,7 +155,7 @@ app.post("/api/books", async (c) => {
     if (existing) {
       if (via === "scan" && status === "bought" && existing.status === "want") {
         const r = await changeStatus(c.env.DB, existing, "bought", "scan");
-        return c.json({ result: "advanced", book: r.book, event_id: r.event_id } satisfies AddResponse);
+        return c.json({ result: "advanced", book: r.book, event_id: r.event_id, session: r.session } satisfies AddResponse);
       }
       return c.json({ result: "already", book: existing, event_id: null } satisfies AddResponse);
     }
@@ -205,7 +210,7 @@ app.post("/api/books", async (c) => {
 
   try {
     const r = await insertBook(c.env.DB, nb, status, via);
-    return c.json({ result: "created", book: r.book, event_id: r.event_id } satisfies AddResponse, 201);
+    return c.json({ result: "created", book: r.book, event_id: r.event_id, session: r.session } satisfies AddResponse, 201);
   } catch (e) {
     // 同時に同じ ISBN を登録した（連打・二重読み取り）
     if (isbn13 && String(e).includes("UNIQUE")) {
@@ -230,14 +235,9 @@ app.patch("/api/books/:id", async (c) => {
   const book = await getBook(c.env.DB, id);
   if (!book) return c.json({ error: "not_found" }, 404);
   const b = await jsonBody(c);
-  let eventId: number | null = null;
-  let cur = book;
-  if (b.status !== undefined) {
-    if (!isStatus(b.status)) return c.json({ error: "bad_status" }, 400);
-    const r = await changeStatus(c.env.DB, cur, b.status, "page");
-    cur = r.book;
-    eventId = r.event_id;
-  }
+  // 先に全部確かめてから書く（途中で 400 になって状態だけ変わる、を避ける）
+  if (b.status !== undefined && !isStatus(b.status)) return c.json({ error: "bad_status" }, 400);
+  if (b.on !== undefined && b.on !== null && !isDateOnly(b.on)) return c.json({ error: "bad_date" }, 400);
   const edit: BookEdit = {};
   if (b.title !== undefined) {
     const t = str(b.title);
@@ -262,17 +262,27 @@ app.patch("/api/books/:id", async (c) => {
     edit.cover_url = u;
     edit.cover_kind = !u ? "none" : u.includes("rakuten.co.jp/") ? "rakuten" : "hanmoto";
   }
-  if (b.finished_at !== undefined) {
-    const f = str(b.finished_at, 40);
-    if (f && Number.isNaN(Date.parse(f))) return c.json({ error: "bad_date" }, 400);
-    edit.finished_at = f ? new Date(f).toISOString() : null;
-  }
   if (b.is_public !== undefined) edit.is_public = b.is_public ? 1 : 0;
+
+  let cur = book;
+  let eventId: number | null = null;
+  let session: ReadingSession | null = null;
+  if (isStatus(b.status)) {
+    try {
+      const r = await changeStatus(c.env.DB, cur, b.status, "page", isDateOnly(b.on) ? b.on : jstToday());
+      cur = r.book;
+      eventId = r.event_id;
+      session = r.session;
+    } catch (e) {
+      if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+  }
   if (Object.keys(edit).length > 0) {
     const updated = await editBook(c.env.DB, id, edit);
     if (updated) cur = updated;
   }
-  return c.json({ book: cur, event_id: eventId });
+  return c.json({ book: cur, event_id: eventId, session } satisfies PatchResponse);
 });
 
 /** 書誌を取り直す（ISBN があるときだけ）。状態・ひとことは触らない */
@@ -295,6 +305,54 @@ app.post("/api/books/:id/refetch", async (c) => {
     meta_source: cd.meta_source,
   });
   return c.json({ book: updated, sources: r.sources });
+});
+
+// ---- 読書の回（読み始めた日〜読了日）。日付は JST の 'YYYY-MM-DD'、null は「不明」／「読書中」
+
+function sessionDates(b: Record<string, unknown>): { started_on?: string | null; finished_on?: string | null } | "bad" {
+  const out: { started_on?: string | null; finished_on?: string | null } = {};
+  for (const k of ["started_on", "finished_on"] as const) {
+    if (b[k] === undefined) continue;
+    if (b[k] === null || b[k] === "") out[k] = null;
+    else if (isDateOnly(b[k])) out[k] = b[k];
+    else return "bad";
+  }
+  return out;
+}
+
+app.post("/api/books/:id/sessions", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  if (!(await getBook(c.env.DB, id))) return c.json({ error: "not_found" }, 404);
+  const d = sessionDates(await jsonBody(c));
+  if (d === "bad") return c.json({ error: "bad_date" }, 400);
+  try {
+    return c.json(await addSession(c.env.DB, id, d.started_on ?? null, d.finished_on ?? null), 201);
+  } catch (e) {
+    if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
+});
+
+app.patch("/api/sessions/:id", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  const d = sessionDates(await jsonBody(c));
+  if (d === "bad") return c.json({ error: "bad_date" }, 400);
+  try {
+    const r = await editSession(c.env.DB, id, d);
+    return r ? c.json(r) : c.json({ error: "not_found" }, 404);
+  } catch (e) {
+    if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
+});
+
+app.delete("/api/sessions/:id", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  const book = await deleteSession(c.env.DB, id);
+  return book ? c.json({ book }) : c.json({ error: "not_found" }, 404);
 });
 
 app.delete("/api/books/:id", async (c) => {

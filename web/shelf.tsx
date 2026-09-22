@@ -69,6 +69,8 @@ export function ShelfPage() {
                 <Link href={`/books/${b.id}`} class="grid-item" aria-label={b.title}>
                   <Cover url={b.cover_url} title={b.title} size="s" />
                   <span class="grid-title">{b.title}</span>
+                  {b.status === "reading" && b.reading_since && <span class="grid-date">{b.reading_since}〜</span>}
+                  {b.status === "read" && b.finished_at && <span class="grid-date">{jstDate(b.finished_at)} 読了</span>}
                 </Link>
               </li>
             ))}

@@ -10,7 +10,8 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
                                                               └ 版元ドットコム（書影の予備・URL を直リンク）
 ```
 
-- 状態は **気になる／買った／読んでる／読了** の4つ。どこからどこへでも切り替えられ、変えるたびに `book_event` に1行残る（取り消し・再読の土台）
+- 状態は **気になる／買った／読んでる／読了** の4つ。どこからどこへでも切り替えられ、変えるたびに `book_event` に1行残る（取り消しの土台）
+- 読書は **回**（`reading_session`: 読み始めた日〜読了日、JST の日付）で持つ。「読んでる」で回が始まり（開いている回があればその続き）、「読了」で閉じる（開いていなければ読み始め不明の回）。読了済みから「読んでる」で再読の回が増える。`book.finished_at` は最新の読了日のキャッシュ。取り消すと、その操作で始まった回は消え、閉じた回は開き直る
 - 書影は画像を持たず、楽天・版元ドットコムの URL を**直リンク**で表示する
 - 画面は Preact の SPA（History API。hash ルーティングは使わない＝ホーム画面アプリでカメラ許可をやり直させない）
 
@@ -21,6 +22,7 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | 数文字で候補 → 1タップ登録 | 2文字以上で自動検索（Enter 不要）。候補の「気になる／買った／読んでる」で登録。5秒の「取り消す」付き |
 | バーコードで即「買った」 | `barcode-detector`（ZXing の wasm・自前配信）。978/979 始まりで検算が通る EAN-13 を**連続2回**読んだら確定。2段目（192…）は黙って無視。同じ本は10秒無視。登録後もカメラは止めない。既に「気になる」の本は「買った」へ進める |
 | 本のページで状態ワンタップ＋ひとこと | 4択のセグメント。「読了」でひとこと欄が開く。ひとことの Enter は改行・保存はボタン（⌘/Ctrl+Enter も可。IME の変換確定は除外） |
+| 読み始めた日・読了日（再読も何回分でも） | 「読んでる」「読了」を押すと今日の日付で記録し、直後に「昨日にする／日付を選ぶ／取り消す」を8秒出す。本のページの「読書の記録」に回ごとに `2026-09-10 〜 2026-09-23（14日）`／`〜（読書中・n日目）` と並び、各回は直す・消す・前の読書を足すができる。本棚の書影の下に読み始めた日／最新の読了日 |
 | ホーム画面から開く | `manifest.webmanifest`＋アイコン（`display: standalone`） |
 
 ## 構成
@@ -46,6 +48,7 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | `POST /api/books` | 登録。`{ status, via, candidate | isbn | manual }` |
 | `GET/PATCH/DELETE /api/books/:id` | 本のページ・状態の切り替え・書誌の手直し・削除 |
 | `POST /api/books/:id/refetch` | 書誌の取り直し |
+| `POST /api/books/:id/sessions`・`PATCH/DELETE /api/sessions/:id` | 読書の回（`started_on`／`finished_on` は JST の `YYYY-MM-DD`、null＝不明／読書中）。`PATCH /api/books/:id` の `status` には `on`（日付・既定は今日）を添えられる |
 | `POST /api/events/:id/undo` | 取り消し（登録イベントなら本ごと消す／状態変更なら戻す。最新のイベントだけ） |
 | `POST /api/books/:id/notes`・`PATCH/DELETE /api/notes/:id` | ひとこと |
 

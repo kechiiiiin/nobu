@@ -1,4 +1,4 @@
-import type { AddResponse, Book, BookDetail, BookNote, Candidate, SearchResponse, Status } from "../shared/types.ts";
+import type { AddResponse, Book, BookDetail, BookNote, Candidate, PatchResponse, ReadingSession, SearchResponse, Status } from "../shared/types.ts";
 
 export class ApiError extends Error {
   constructor(
@@ -53,7 +53,12 @@ export const api = {
   addCandidate: (candidate: Candidate, status: Status) => call<AddResponse>("POST", "/api/books", { candidate, status, via: "search" }),
   addIsbn: (isbn: string, status: Status) => call<AddResponse>("POST", "/api/books", { isbn, status, via: "scan" }),
   addManual: (manual: Record<string, string>, status: Status) => call<AddResponse>("POST", "/api/books", { manual, status, via: "manual" }),
-  patch: (id: number, body: Record<string, unknown>) => call<{ book: Book; event_id: number | null }>("PATCH", `/api/books/${id}`, body),
+  patch: (id: number, body: Record<string, unknown>) => call<PatchResponse>("PATCH", `/api/books/${id}`, body),
+  addSession: (bookId: number, body: { started_on: string | null; finished_on: string | null }) =>
+    call<{ session: ReadingSession; book: Book }>("POST", `/api/books/${bookId}/sessions`, body),
+  editSession: (id: number, body: { started_on?: string | null; finished_on?: string | null }) =>
+    call<{ session: ReadingSession; book: Book }>("PATCH", `/api/sessions/${id}`, body),
+  deleteSession: (id: number) => call<{ book: Book }>("DELETE", `/api/sessions/${id}`),
   refetch: (id: number) => call<{ book: Book }>("POST", `/api/books/${id}/refetch`),
   remove: (id: number) => call<{ ok: true }>("DELETE", `/api/books/${id}`),
   undo: (eventId: number) => call<{ result: "deleted" | "reverted"; book: Book | null }>("POST", `/api/events/${eventId}/undo`),

@@ -145,6 +145,9 @@ export function errorText(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.code === "auth") return "ログインが切れました。再読み込みしてください";
     if (e.code === "not_latest") return "この後に状態を変えているので取り消せません";
+    if (e.code === "finished_before_started") return "読了日が読み始めた日より前になっています";
+    if (e.code === "empty_session") return "読み始めた日か読了日のどちらかは入れてください";
+    if (e.code === "bad_date") return "日付の形が正しくありません";
     return `うまくいきませんでした（${e.code}）`;
   }
   if (e instanceof DOMException && e.name === "AbortError") return "";
@@ -154,6 +157,7 @@ export function errorText(e: unknown): string {
 /** ISO → 「2026-09-22」（JST） */
 export function jstDate(iso: string | null): string {
   if (!iso) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso; // もう JST の日付
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(d);

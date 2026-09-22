@@ -45,8 +45,23 @@ export interface Book {
   meta_source: MetaSource;
   status: Status;
   status_at: string;
+  /** 最新の読了日（JST の 'YYYY-MM-DD'。reading_session から同期するキャッシュ） */
   finished_at: string | null;
   is_public: number;
+  created_at: string;
+  updated_at: string;
+  /** 一覧のときだけ: 読書中の回の読み始めた日 */
+  reading_since?: string | null;
+}
+
+/** 読書の1回。started_on が null＝読み始め不明、finished_on が null＝読書中（または中断中） */
+export interface ReadingSession {
+  id: number;
+  book_id: number;
+  started_on: string | null;
+  finished_on: string | null;
+  created_event_id: number | null;
+  finished_event_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -82,10 +97,21 @@ export interface AddResponse {
   book: Book;
   /** 取り消し用（already のときは null） */
   event_id: number | null;
+  /** この操作で始まった／閉じた読書の回 */
+  session?: ReadingSession | null;
+}
+
+/** PATCH /api/books/:id の結果 */
+export interface PatchResponse {
+  book: Book;
+  event_id: number | null;
+  session: ReadingSession | null;
 }
 
 export interface BookDetail {
   book: Book;
   notes: BookNote[];
   events: BookEvent[];
+  /** 新しい順 */
+  sessions: ReadingSession[];
 }

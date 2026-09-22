@@ -223,3 +223,20 @@ textarea {
 .scan-status { display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.45); padding: 6px 6px 6px 12px; border-radius: 10px; font-size: 14px; }
 .scan-status .btn.ghost { color: #fff; border-color: rgba(255,255,255,0.6); }
 .scan-start p.scan-note { color: #ffd9a8; }
+.grid-date { font-size: 10px; color: var(--muted); margin-top: -4px; font-variant-numeric: tabular-nums; }
+
+/* 読書の回 */
+.nudge {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 10px 0 0; padding: 10px 12px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); font-size: 14px;
+}
+.nudge-text { flex: 1 1 100%; }
+.nudge input[type="date"] { height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.sessions { list-style: none; padding: 0; margin: 20px 0 8px; }
+.sessions h2 { font-size: 15px; margin: 0 0 6px; }
+.session { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.session-text { flex: 1; font-size: 15px; }
+.session-text small { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.session-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 0 12px; border-bottom: 1px solid var(--line); }
+.session-edit .row { grid-column: 1 / -1; margin-top: 0; }
+.session-edit input[type="date"] { width: 100%; }

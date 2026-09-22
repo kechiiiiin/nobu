@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "./api.ts";
 import { Cover, errorText, isImeEnter, jstDate, navigate, showToast } from "./ui.tsx";
-import { STATUSES, STATUS_LABEL, type Book, type BookDetail, type BookNote, type Status } from "../shared/types.ts";
+import { STATUSES, STATUS_LABEL, type Book, type BookDetail, type BookNote, type ReadingSession, type Status } from "../shared/types.ts";
+import { addDays, daysInclusive, jstToday } from "../shared/dates.ts";
+
+/** 「読んでる」「読了」を押した直後に出す、日付の付け替え（既定は今日で記録済み） */
+interface Nudge {
+  key: number;
+  kind: "start" | "finish";
+  session: ReadingSession;
+  eventId: number;
+}
 
 export function BookPage(props: { id: number }) {
   const [d, setD] = useState<BookDetail | null>(null);
   const [err, setErr] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [nudge, setNudge] = useState<Nudge | null>(null);
 
   async function load() {
     try {
@@ -20,6 +30,7 @@ export function BookPage(props: { id: number }) {
     setD(null);
     setNoteOpen(false);
     setEditing(false);
+    setNudge(null);
     load();
   }, [props.id]);
 
@@ -34,11 +45,18 @@ export function BookPage(props: { id: number }) {
     }
     const prev = d!;
     setD({ ...prev, book: { ...b, status: s } }); // 先に塗る
+    setNudge(null);
     try {
+      // 日付は今日で記録する（1タップで済む）。違えば直後に出る「昨日／日付を選ぶ」で直す
       const r = await api.patch(b.id, { status: s });
-      setD((cur) => (cur ? { ...cur, book: r.book } : cur));
+      await load();
       if (s === "read") setNoteOpen(true);
-      if (r.event_id) {
+      const ses = r.session;
+      const started = ses && r.event_id && ses.created_event_id === r.event_id && s === "reading";
+      const finished = ses && r.event_id && ses.finished_event_id === r.event_id && s === "read";
+      if (ses && r.event_id && (started || finished)) {
+        setNudge({ key: Date.now(), kind: started ? "start" : "finish", session: ses, eventId: r.event_id });
+      } else if (r.event_id) {
         showToast({
           text: `「${STATUS_LABEL[s]}」にしました`,
           undo: async () => {
@@ -72,10 +90,20 @@ export function BookPage(props: { id: number }) {
           </button>
         ))}
       </div>
-      <p class="muted small center">
-        {STATUS_LABEL[b.status]}：{jstDate(b.status_at)}
-        {b.status === "read" && b.finished_at && b.finished_at !== b.status_at ? `（読了日 ${jstDate(b.finished_at)}）` : ""}
-      </p>
+      {nudge ? (
+        <DateNudge
+          key={nudge.key}
+          nudge={nudge}
+          onDone={() => setNudge(null)}
+          onChanged={load}
+        />
+      ) : (
+        <p class="muted small center">
+          {STATUS_LABEL[b.status]}：{jstDate(b.status_at)}
+        </p>
+      )}
+
+      <Sessions book={b} sessions={d.sessions} onChanged={load} />
 
       {(noteOpen || b.status === "read") && (
         <NoteComposer
@@ -290,7 +318,6 @@ function EditForm(props: { book: Book; onSaved: (b: Book) => void }) {
     pubdate: b.pubdate ?? "",
     isbn13: b.isbn13 ?? "",
     cover_url: b.cover_url ?? "",
-    finished_at: b.finished_at ? jstDate(b.finished_at) : "",
   });
   const [busy, setBusy] = useState(false);
   const field = (k: keyof typeof f, label: string, extra: Record<string, string> = {}) => (
@@ -310,10 +337,7 @@ function EditForm(props: { book: Book; onSaved: (b: Book) => void }) {
         e.preventDefault();
         setBusy(true);
         try {
-          const body: Record<string, unknown> = { ...f };
-          // 読了日は JST の日付として受け取る
-          body.finished_at = f.finished_at ? `${f.finished_at}T12:00:00+09:00` : null;
-          const r = await api.patch(b.id, body);
+          const r = await api.patch(b.id, { ...f });
           props.onSaved(r.book);
           showToast({ text: "直しました" });
         } catch (err) {
@@ -329,12 +353,190 @@ function EditForm(props: { book: Book; onSaved: (b: Book) => void }) {
       {field("pubdate", "発行")}
       {field("isbn13", "ISBN", { inputMode: "numeric" })}
       {field("cover_url", "書影の URL（楽天・版元ドットコムの画像だけ）", { inputMode: "url" })}
-      {field("finished_at", "読了日", { type: "date" })}
       <div class="row end">
         <button type="submit" class="btn" disabled={busy || !f.title.trim()}>
           保存
         </button>
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------- 読書の回
+
+function DateNudge(props: { nudge: Nudge; onDone: () => void; onChanged: () => Promise<void> }) {
+  const { nudge } = props;
+  const field = nudge.kind === "start" ? "started_on" : "finished_on";
+  const label = nudge.kind === "start" ? "読み始め" : "読了";
+  const today = jstToday();
+  const [date, setDate] = useState<string>((nudge.session[field] as string | null) ?? today);
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // 触らなければ数秒で消える（日付を選んでいる間は消さない）
+  useEffect(() => {
+    if (picking || busy) return;
+    const t = setTimeout(props.onDone, 8000);
+    return () => clearTimeout(t);
+  }, [picking, busy, date]);
+
+  async function change(to: string) {
+    if (!to || to === date) return;
+    setBusy(true);
+    try {
+      await api.editSession(nudge.session.id, { [field]: to });
+      setDate(to);
+      setPicking(false);
+      await props.onChanged();
+    } catch (e) {
+      showToast({ text: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const when = date === today ? `今日（${date}）` : date === addDays(today, -1) ? `昨日（${date}）` : date;
+  return (
+    <div class="nudge" role="status">
+      <span class="nudge-text">
+        {label}：{when}で記録しました
+      </span>
+      {date !== addDays(today, -1) && (
+        <button class="btn ghost small" disabled={busy} onClick={() => change(addDays(today, -1))}>
+          昨日にする
+        </button>
+      )}
+      {picking ? (
+        <input type="date" value={date} max={today} disabled={busy} onChange={(e) => change((e.target as HTMLInputElement).value)} aria-label={`${label}の日付`} />
+      ) : (
+        <button class="btn ghost small" disabled={busy} onClick={() => setPicking(true)}>
+          日付を選ぶ
+        </button>
+      )}
+      <button
+        class="btn ghost small"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.undo(nudge.eventId);
+            props.onDone();
+            await props.onChanged();
+            showToast({ text: "取り消しました" });
+          } catch (e) {
+            showToast({ text: errorText(e) });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        取り消す
+      </button>
+      <button class="link-btn small" onClick={props.onDone} aria-label="閉じる">
+        閉じる
+      </button>
+    </div>
+  );
+}
+
+/** 1回分の表示。例: 2026-09-10 〜 2026-09-23（14日）／2026-09-10 〜（読書中・3日目） */
+export function sessionText(s: ReadingSession, bookStatus: Status, isLatestOpen: boolean, today = jstToday()): { range: string; note: string } {
+  const from = s.started_on ?? "（読み始め不明）";
+  if (s.finished_on) {
+    return { range: `${from} 〜 ${s.finished_on}`, note: s.started_on ? `${daysInclusive(s.started_on, s.finished_on)}日` : "" };
+  }
+  if (bookStatus === "reading" && isLatestOpen) return { range: `${from} 〜`, note: `読書中・${daysInclusive(s.started_on!, today)}日目` };
+  return { range: `${from} 〜`, note: "中断" };
+}
+
+function Sessions(props: { book: Book; sessions: ReadingSession[]; onChanged: () => Promise<void> }) {
+  const [editId, setEditId] = useState<number | "new" | null>(null);
+  const latestOpen = props.sessions.filter((s) => !s.finished_on).sort((a, b) => b.id - a.id)[0]?.id;
+  return (
+    <section class="sessions">
+      <h2>読書の記録</h2>
+      {props.sessions.length === 0 && editId !== "new" && <p class="muted small">「読んでる」「読了」を押すと、ここに日付が残ります。</p>}
+      <ul class="sessions" style={{ margin: 0 }}>
+        {props.sessions.map((s) =>
+          editId === s.id ? (
+            <SessionEditor key={s.id} session={s} bookId={props.book.id} onClose={() => setEditId(null)} onChanged={props.onChanged} />
+          ) : (
+            <li class="session" key={s.id}>
+              <span class="session-text">
+                {sessionText(s, props.book.status, s.id === latestOpen).range}
+                {sessionText(s, props.book.status, s.id === latestOpen).note && <small>（{sessionText(s, props.book.status, s.id === latestOpen).note}）</small>}
+              </span>
+              <button class="link-btn small" onClick={() => setEditId(s.id)}>
+                直す
+              </button>
+            </li>
+          ),
+        )}
+        {editId === "new" && <SessionEditor bookId={props.book.id} onClose={() => setEditId(null)} onChanged={props.onChanged} />}
+      </ul>
+      {editId === null && (
+        <button class="link-btn small" onClick={() => setEditId("new")}>
+          前に読んだ記録を足す
+        </button>
+      )}
+    </section>
+  );
+}
+
+function SessionEditor(props: { session?: ReadingSession; bookId: number; onClose: () => void; onChanged: () => Promise<void> }) {
+  const s = props.session;
+  const [started, setStarted] = useState(s?.started_on ?? "");
+  const [finished, setFinished] = useState(s?.finished_on ?? "");
+  const [busy, setBusy] = useState(false);
+  const today = jstToday();
+
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true);
+    try {
+      await fn();
+      await props.onChanged();
+      props.onClose();
+    } catch (e) {
+      showToast({ text: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const body = { started_on: started || null, finished_on: finished || null };
+  return (
+    <li class="session-edit">
+      <label class="field">
+        <span>読み始めた日（空＝不明）</span>
+        <input type="date" value={started} max={today} onInput={(e) => setStarted((e.target as HTMLInputElement).value)} />
+      </label>
+      <label class="field">
+        <span>読了日（空＝読書中）</span>
+        <input type="date" value={finished} max={today} onInput={(e) => setFinished((e.target as HTMLInputElement).value)} />
+      </label>
+      <div class="row end">
+        {s && (
+          <button
+            class="btn danger small"
+            disabled={busy}
+            onClick={() => {
+              if (confirm("この回の記録を消しますか？")) run(() => api.deleteSession(s.id));
+            }}
+          >
+            消す
+          </button>
+        )}
+        <button class="btn ghost small" disabled={busy} onClick={props.onClose}>
+          やめる
+        </button>
+        <button
+          class="btn small"
+          disabled={busy || (!started && !finished)}
+          onClick={() => run(() => (s ? api.editSession(s.id, body) : api.addSession(props.bookId, body)))}
+        >
+          保存
+        </button>
+      </div>
+    </li>
   );
 }
