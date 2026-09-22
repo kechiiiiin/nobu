@@ -79,20 +79,22 @@ export function fromCandidate(c: Candidate): NewBook {
 export async function insertBook(db: D1Database, nb: NewBook, status: Status, via: string): Promise<{ book: Book; event_id: number }> {
   const at = nowIso();
   const finished = status === "read" ? at : null;
-  const [ins] = await db.batch([
+  // 1つの batch（＝1トランザクション）で。イベントは直前の INSERT の rowid を参照する
+  const [ins, ev] = await db.batch([
     db
       .prepare(
         `INSERT INTO book (isbn13, title, author, publisher, pubdate, cover_url, cover_kind, meta_source, status, status_at, finished_at, is_public, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING *`,
       )
       .bind(nb.isbn13, nb.title, nb.author, nb.publisher, nb.pubdate, nb.cover_url, nb.cover_kind, nb.meta_source, status, at, finished, at, at),
+    db
+      .prepare("INSERT INTO book_event (book_id, from_status, to_status, at, via) VALUES (last_insert_rowid(), NULL, ?, ?, ?) RETURNING id, book_id")
+      .bind(status, at, via),
   ]);
   const book = (ins!.results as Book[])[0]!;
-  const ev = await db
-    .prepare("INSERT INTO book_event (book_id, from_status, to_status, at, via) VALUES (?, NULL, ?, ?, ?) RETURNING id")
-    .bind(book.id, status, at, via)
-    .first<{ id: number }>();
-  return { book, event_id: ev!.id };
+  const event = (ev!.results as { id: number; book_id: number }[])[0]!;
+  if (event.book_id !== book.id) throw new Error("event/book mismatch");
+  return { book, event_id: event.id };
 }
 
 /** 状態の切り替え。同じ状態なら何もしない（event_id = null） */

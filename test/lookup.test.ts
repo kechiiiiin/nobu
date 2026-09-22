@@ -12,6 +12,7 @@ import {
   parseOpenbd,
   parseRakuten,
   rakutenCover,
+  decodeXml,
 } from "../src/lookup.ts";
 
 test("ISBN: 検算と正規化", () => {
@@ -37,10 +38,23 @@ test("スキャン: 2回連続で確定・2段目は無視・同じ本は10秒�
   assert.equal(g.feed([isbn], 550), null);
   assert.equal(g.feed([isbn], SAME_IGNORE_MS + 600), null); // 候補に戻るだけ
   assert.equal(g.feed([isbn], SAME_IGNORE_MS + 700), isbn);
-  // 取り消したらすぐ読み直せる
-  g.forget(isbn);
-  g.feed([isbn], SAME_IGNORE_MS + 800);
-  assert.equal(g.feed([isbn], SAME_IGNORE_MS + 900), isbn);
+  // 取り消した直後、本がカメラ前に残っていても再登録しない
+  const T = SAME_IGNORE_MS;
+  g.holdUntilGone(isbn, T + 750);
+  for (let t = 800; t < 5000; t += 150) {
+    // ときどき読み損じのフレーム（空）が混ざっても解けない
+    assert.equal(g.feed(t % 600 === 200 ? [] : [isbn], T + t), null);
+  }
+  // 1秒以上写らなければ外れたとみなし、戻せばまた読める
+  assert.equal(g.feed([], T + 5100), null);
+  assert.equal(g.feed([], T + 6000), null);
+  g.feed([isbn], T + 6100);
+  assert.equal(g.feed([isbn], T + 6200), isbn);
+  // 別の本を写しても解ける
+  g.holdUntilGone(isbn, T + 5300);
+  const other = "9784334033071";
+  assert.equal(g.feed([other], SAME_IGNORE_MS + 5400), null);
+  assert.equal(g.feed([other], SAME_IGNORE_MS + 5500), other);
   // 間が空きすぎたら数え直し
   const g2 = new ScanGate();
   g2.feed([isbn], 0);
@@ -117,4 +131,11 @@ test("openBD: summary から候補を作る", () => {
   assert.equal(c?.pubdate, "2017-06");
   assert.equal(parseOpenbd([null], "9784862762108"), null);
   assert.equal(normalizeOpenbdDate("20170620"), "2017-06-20");
+});
+
+test("XML: 範囲外の数値文字参照で落ちない", () => {
+  assert.equal(decodeXml("A&#x110000;B&#65;&amp;"), "A&#x110000;BA&");
+  assert.equal(decodeXml("&#99999999;"), "&#99999999;");
+  const list = parseNdl("<item><category>紙</category><dc:title>壊れた &#x110000; 題</dc:title></item><item><category>紙</category><dc:title>普通の本</dc:title></item>");
+  assert.equal(list.length, 2);
 });

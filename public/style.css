@@ -222,3 +222,4 @@ textarea {
 .scan-start p { color: #ddd; font-size: 15px; }
 .scan-status { display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.45); padding: 6px 6px 6px 12px; border-radius: 10px; font-size: 14px; }
 .scan-status .btn.ghost { color: #fff; border-color: rgba(255,255,255,0.6); }
+.scan-start p.scan-note { color: #ffd9a8; }

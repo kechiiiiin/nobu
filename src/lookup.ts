@@ -109,11 +109,20 @@ async function rakutenFetch(env: Env, params: Record<string, string>): Promise<C
 
 // ---------------------------------------------------------------- NDL サーチ
 
-function decodeXml(s: string): string {
+/** 範囲外の数値文字参照は元の文字列のまま残す（RangeError で NDL の結果全体を落とさない） */
+function codePoint(n: number, original: string): string {
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return original;
+  }
+}
+
+export function decodeXml(s: string): string {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => codePoint(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d) => codePoint(Number(d), m))
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, "<")

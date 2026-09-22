@@ -30,7 +30,7 @@ const CSP = [
   "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   // 書影は楽天・版元ドットコムへの直リンク
-  "img-src 'self' data: blob: https://thumbnail.image.rakuten.co.jp https://img.hanmoto.com https://*.rakuten.co.jp",
+  "img-src 'self' data: blob: https://thumbnail.image.rakuten.co.jp https://img.hanmoto.com",
   "media-src 'self' blob:",
   "connect-src 'self'",
   "worker-src 'self' blob:",
@@ -40,6 +40,9 @@ const CSP = [
   "form-action 'self'",
   "object-src 'none'",
 ].join("; ");
+
+/** 書影として受ける URL（CSP の img-src と揃える） */
+const COVER_URL_OK = /^https:\/\/(thumbnail\.image\.rakuten\.co\.jp|img\.hanmoto\.com)\//;
 
 const app = new Hono<AppEnv>();
 
@@ -140,6 +143,7 @@ app.post("/api/books", async (c) => {
   else if (typeof b.isbn === "string") isbn13 = toIsbn13(b.isbn);
   else if (manual?.isbn13) isbn13 = toIsbn13(String(manual.isbn13));
   if (typeof b.isbn === "string" && !isbn13) return c.json({ error: "bad_isbn" }, 400);
+  if (!cand && typeof b.isbn !== "string" && str(manual?.isbn13) && !isbn13) return c.json({ error: "bad_isbn" }, 400);
 
   if (isbn13) {
     const existing = await getBookByIsbn(c.env.DB, isbn13);
@@ -166,7 +170,7 @@ app.post("/api/books", async (c) => {
       cover_kind: (["rakuten", "hanmoto"] as const).includes(cand.cover_kind as "rakuten") ? cand.cover_kind : "none",
     });
     // 書影は楽天か版元ドットコムの URL だけ受ける（任意の URL を持ち込ませない）
-    if (nb.cover_url && !/^https:\/\/(thumbnail\.image\.rakuten\.co\.jp|img\.hanmoto\.com)\//.test(nb.cover_url)) {
+    if (nb.cover_url && !COVER_URL_OK.test(nb.cover_url)) {
       nb.cover_url = null;
       nb.cover_kind = "none";
     }
@@ -254,9 +258,9 @@ app.patch("/api/books/:id", async (c) => {
   }
   if (b.cover_url !== undefined) {
     const u = str(b.cover_url, 500);
-    if (u && !/^https:\/\//.test(u)) return c.json({ error: "bad_cover_url" }, 400);
+    if (u && !COVER_URL_OK.test(u)) return c.json({ error: "bad_cover_url" }, 400);
     edit.cover_url = u;
-    edit.cover_kind = !u ? "none" : /rakuten\.co\.jp\//.test(u) ? "rakuten" : /img\.hanmoto\.com\//.test(u) ? "hanmoto" : "manual";
+    edit.cover_kind = !u ? "none" : u.includes("rakuten.co.jp/") ? "rakuten" : "hanmoto";
   }
   if (b.finished_at !== undefined) {
     const f = str(b.finished_at, 40);

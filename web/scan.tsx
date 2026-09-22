@@ -37,15 +37,32 @@ export function ScanPage() {
     alive.current = true;
     // 画面を開いたら wasm を先に読み始めておく
     loadDetector().catch(() => {});
+    // アプリを切り替えると iOS はカメラを止める。黙って「読み取り中」のまま死なないよう、止めて起動ボタンに戻す
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden" && stream.current) halt("別のアプリに切り替えたのでカメラを止めました。もう一度起動してください。");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       alive.current = false;
+      document.removeEventListener("visibilitychange", onVisibility);
       stop();
     };
   }, []);
 
   function stop() {
-    stream.current?.getTracks().forEach((t) => t.stop());
+    stream.current?.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
     stream.current = null;
+  }
+
+  /** カメラを止めて起動ボタンの画面に戻す */
+  function halt(message = "") {
+    stop();
+    if (!alive.current) return;
+    setPhase("idle");
+    setMsg(message);
   }
 
   async function start() {
@@ -62,6 +79,10 @@ export function ScanPage() {
         return;
       }
       stream.current = s;
+      // OS 側でカメラが切られた（着信・他アプリ・画面ロックなど）
+      s.getVideoTracks().forEach((t) => {
+        t.onended = () => halt("カメラが止まりました。もう一度起動してください。");
+      });
       const v = video.current!;
       v.srcObject = s;
       await v.play();
@@ -77,6 +98,10 @@ export function ScanPage() {
 
   async function loop(detector: Detector) {
     while (alive.current && stream.current) {
+      if (stream.current.getVideoTracks().every((t) => t.readyState === "ended")) {
+        halt("カメラが止まりました。もう一度起動してください。");
+        break;
+      }
       const v = video.current;
       if (v && v.readyState >= 2 && !busy.current) {
         try {
@@ -110,14 +135,15 @@ export function ScanPage() {
           undo: r.event_id
             ? async () => {
                 await api.undo(r.event_id!);
-                gate.current.forget(isbn);
+                // 本がカメラ前に残っていても読み直さない（一度外してから戻せばまた読める）
+                gate.current.holdUntilGone(isbn, performance.now());
                 setCount((n) => Math.max(0, n - 1));
               }
             : undefined,
         });
       }
     } catch (e) {
-      gate.current.forget(isbn);
+      gate.current.holdUntilGone(isbn, performance.now());
       showToast({ text: errorText(e) });
     } finally {
       busy.current = false;
@@ -135,17 +161,14 @@ export function ScanPage() {
             <button class="btn big" onClick={start} disabled={phase === "starting"}>
               {phase === "starting" ? "起動中…" : "カメラを起動"}
             </button>
-            {msg && <p class="error">{msg}</p>}
+            {msg && <p class={phase === "error" ? "error" : "scan-note"}>{msg}</p>}
           </div>
         ) : (
           <div class="scan-status">
             読み取り中{count > 0 ? `・この回 ${count} 冊` : ""}
             <button
               class="btn ghost small"
-              onClick={() => {
-                stop();
-                setPhase("idle");
-              }}
+              onClick={() => halt()}
             >
               止める
             </button>

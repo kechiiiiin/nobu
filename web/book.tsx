@@ -328,7 +328,7 @@ function EditForm(props: { book: Book; onSaved: (b: Book) => void }) {
       {field("publisher", "出版社")}
       {field("pubdate", "発行")}
       {field("isbn13", "ISBN", { inputMode: "numeric" })}
-      {field("cover_url", "書影の URL", { inputMode: "url" })}
+      {field("cover_url", "書影の URL（楽天・版元ドットコムの画像だけ）", { inputMode: "url" })}
       {field("finished_at", "読了日", { type: "date" })}
       <div class="row end">
         <button type="submit" class="btn" disabled={busy || !f.title.trim()}>

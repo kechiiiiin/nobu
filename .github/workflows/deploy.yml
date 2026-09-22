@@ -6,11 +6,6 @@ on:
   pull_request:
   workflow_dispatch: {}
 
-# マイグレーションの途中で取り消されないよう、後続は待たせる
-concurrency:
-  group: deploy-cloudflare
-  cancel-in-progress: false
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -39,6 +34,10 @@ jobs:
   deploy:
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # マイグレーションの途中で取り消されないよう、デプロイだけ直列にする（PR のテストは巻き込まない）
+    concurrency:
+      group: deploy-cloudflare
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read

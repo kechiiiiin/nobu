@@ -66,6 +66,7 @@ export const requireAccess: MiddlewareHandler<AppEnv> = async (c, next) => {
       issuer: team,
       audience: CF_ACCESS_AUD,
       algorithms: ["RS256"],
+      requiredClaims: ["exp", "email"],
     });
     email = String(payload.email ?? "").toLowerCase();
   } catch {
