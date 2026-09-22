@@ -401,13 +401,23 @@ function DateNudge(props: { nudge: Nudge; onDone: () => void; onChanged: () => P
       <span class="nudge-text">
         {label}：{when}で記録しました
       </span>
-      {date !== addDays(today, -1) && (
+      {date !== addDays(today, -1) && !(nudge.kind === "finish" && nudge.session.started_on && addDays(today, -1) < nudge.session.started_on) && (
         <button class="btn ghost small" disabled={busy} onClick={() => change(addDays(today, -1))}>
           昨日にする
         </button>
       )}
       {picking ? (
-        <input type="date" value={date} max={today} disabled={busy} onChange={(e) => change((e.target as HTMLInputElement).value)} aria-label={`${label}の日付`} />
+        <input
+          type="date"
+          value={date}
+          min={nudge.kind === "finish" ? (nudge.session.started_on ?? undefined) : undefined}
+          max={today}
+          disabled={busy}
+          // iOS では input が来ないことがあるので change でも拾う（同じ値なら change() 側で無視）
+          onInput={(e) => change((e.target as HTMLInputElement).value)}
+          onChange={(e) => change((e.target as HTMLInputElement).value)}
+          aria-label={`${label}の日付`}
+        />
       ) : (
         <button class="btn ghost small" disabled={busy} onClick={() => setPicking(true)}>
           日付を選ぶ
@@ -459,7 +469,14 @@ function Sessions(props: { book: Book; sessions: ReadingSession[]; onChanged: ()
       <ul class="sessions" style={{ margin: 0 }}>
         {props.sessions.map((s) =>
           editId === s.id ? (
-            <SessionEditor key={s.id} session={s} bookId={props.book.id} onClose={() => setEditId(null)} onChanged={props.onChanged} />
+            <SessionEditor
+              key={s.id}
+              session={s}
+              current={props.book.status === "reading" && s.id === latestOpen}
+              bookId={props.book.id}
+              onClose={() => setEditId(null)}
+              onChanged={props.onChanged}
+            />
           ) : (
             <li class="session" key={s.id}>
               <span class="session-text">
@@ -483,7 +500,12 @@ function Sessions(props: { book: Book; sessions: ReadingSession[]; onChanged: ()
   );
 }
 
-function SessionEditor(props: { session?: ReadingSession; bookId: number; onClose: () => void; onChanged: () => Promise<void> }) {
+/**
+ * 回の手直し。本の状態と食い違わないよう（サーバーも同じ検査をする）:
+ *   - 今読んでいる回（current）は読了日欄を出さない・消せない。閉じるのは「読了」ボタン
+ *   - 読み終えた回・新しく足す回は読了日が必須
+ */
+function SessionEditor(props: { session?: ReadingSession; current?: boolean; bookId: number; onClose: () => void; onChanged: () => Promise<void> }) {
   const s = props.session;
   const [started, setStarted] = useState(s?.started_on ?? "");
   const [finished, setFinished] = useState(s?.finished_on ?? "");
@@ -503,19 +525,27 @@ function SessionEditor(props: { session?: ReadingSession; bookId: number; onClos
     }
   }
 
-  const body = { started_on: started || null, finished_on: finished || null };
+  const current = Boolean(props.current);
+  const needFinish = !current && (!s || Boolean(s.finished_on));
+  const body = current ? { started_on: started || null } : { started_on: started || null, finished_on: finished || null };
+  const setDate = (set: (v: string) => void) => (e: Event) => set((e.target as HTMLInputElement).value);
   return (
     <li class="session-edit">
       <label class="field">
         <span>読み始めた日（空＝不明）</span>
-        <input type="date" value={started} max={today} onInput={(e) => setStarted((e.target as HTMLInputElement).value)} />
+        {/* iOS では input が来ないことがあるので change でも拾う */}
+        <input type="date" value={started} max={finished || today} onInput={setDate(setStarted)} onChange={setDate(setStarted)} />
       </label>
-      <label class="field">
-        <span>読了日（空＝読書中）</span>
-        <input type="date" value={finished} max={today} onInput={(e) => setFinished((e.target as HTMLInputElement).value)} />
-      </label>
+      {current ? (
+        <p class="muted small">読み終えたら「読了」ボタンで閉じます。</p>
+      ) : (
+        <label class="field">
+          <span>{needFinish ? "読了日" : "読了日（空＝中断中のまま）"}</span>
+          <input type="date" value={finished} min={started || undefined} max={today} onInput={setDate(setFinished)} onChange={setDate(setFinished)} />
+        </label>
+      )}
       <div class="row end">
-        {s && (
+        {s && !current && (
           <button
             class="btn danger small"
             disabled={busy}
@@ -531,8 +561,8 @@ function SessionEditor(props: { session?: ReadingSession; bookId: number; onClos
         </button>
         <button
           class="btn small"
-          disabled={busy || (!started && !finished)}
-          onClick={() => run(() => (s ? api.editSession(s.id, body) : api.addSession(props.bookId, body)))}
+          disabled={busy || (needFinish && !finished) || (!started && !finished)}
+          onClick={() => run(() => (s ? api.editSession(s.id, body) : api.addSession(props.bookId, { started_on: started || null, finished_on: finished || null })))}
         >
           保存
         </button>

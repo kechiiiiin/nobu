@@ -238,6 +238,7 @@ app.patch("/api/books/:id", async (c) => {
   // 先に全部確かめてから書く（途中で 400 になって状態だけ変わる、を避ける）
   if (b.status !== undefined && !isStatus(b.status)) return c.json({ error: "bad_status" }, 400);
   if (b.on !== undefined && b.on !== null && !isDateOnly(b.on)) return c.json({ error: "bad_date" }, 400);
+  if (isDateOnly(b.on) && b.on > jstToday()) return c.json({ error: "future_date" }, 400);
   const edit: BookEdit = {};
   if (b.title !== undefined) {
     const t = str(b.title);
@@ -351,8 +352,13 @@ app.patch("/api/sessions/:id", async (c) => {
 app.delete("/api/sessions/:id", async (c) => {
   const id = idParam(c);
   if (!id) return c.json({ error: "bad_id" }, 400);
-  const book = await deleteSession(c.env.DB, id);
-  return book ? c.json({ book }) : c.json({ error: "not_found" }, 404);
+  try {
+    const book = await deleteSession(c.env.DB, id);
+    return book ? c.json({ book }) : c.json({ error: "not_found" }, 404);
+  } catch (e) {
+    if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
 });
 
 app.delete("/api/books/:id", async (c) => {

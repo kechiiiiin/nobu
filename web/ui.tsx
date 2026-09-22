@@ -148,6 +148,10 @@ export function errorText(e: unknown): string {
     if (e.code === "finished_before_started") return "読了日が読み始めた日より前になっています";
     if (e.code === "empty_session") return "読み始めた日か読了日のどちらかは入れてください";
     if (e.code === "bad_date") return "日付の形が正しくありません";
+    if (e.code === "future_date") return "未来の日付は入れられません";
+    if (e.code === "finished_required") return "読了日は空にできません（読書中に戻すときは「読んでる」を押してください）";
+    if (e.code === "close_with_button") return "読んでいる回は「読了」ボタンで閉じてください";
+    if (e.code === "open_session_delete") return "読んでいる回は消せません（状態を変えてから消してください）";
     return `うまくいきませんでした（${e.code}）`;
   }
   if (e instanceof DOMException && e.name === "AbortError") return "";

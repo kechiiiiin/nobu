@@ -154,6 +154,7 @@ export async function changeStatus(
   on: string = jstToday(),
 ): Promise<{ book: Book; event_id: number | null; session: ReadingSession | null }> {
   if (book.status === to) return { book, event_id: null, session: null };
+  if (on > jstToday()) throw new SessionDateError("future_date");
   const at = nowIso();
   const open = to === "reading" || to === "read" ? await openSession(db, book.id) : null;
   if (to === "read" && open?.started_on && open.started_on > on) throw new SessionDateError("finished_before_started");
@@ -223,6 +224,8 @@ export async function undoEvent(db: D1Database, eventId: number): Promise<{ resu
   const res = await db.batch([
     db.prepare("UPDATE book SET status = ?, status_at = COALESCE(?, created_at), updated_at = ? WHERE id = ?").bind(ev.from_status, prev?.at ?? null, at, ev.book_id),
     db.prepare("DELETE FROM reading_session WHERE created_event_id = ?").bind(ev.id),
+    // 読み始めを「不明」に直した回は、読了を外すと中身が無くなるので消す（開き直すと CHECK 違反）
+    db.prepare("DELETE FROM reading_session WHERE finished_event_id = ? AND started_on IS NULL").bind(ev.id),
     db.prepare("UPDATE reading_session SET finished_on = NULL, finished_event_id = NULL, updated_at = ? WHERE finished_event_id = ?").bind(at, ev.id),
     db.prepare("DELETE FROM book_event WHERE id = ?").bind(ev.id),
     syncFinished(db, ev.book_id),
@@ -235,6 +238,16 @@ export async function undoEvent(db: D1Database, eventId: number): Promise<{ resu
 function checkSession(started: string | null, finished: string | null) {
   if (!started && !finished) throw new SessionDateError("empty_session");
   if (started && finished && started > finished) throw new SessionDateError("finished_before_started");
+  const today = jstToday();
+  if ((started && started > today) || (finished && finished > today)) throw new SessionDateError("future_date");
+}
+
+/** 状態「読んでる」の本の、今読んでいる回か（読了日はボタンで入れる・消せない） */
+async function isCurrentReading(db: D1Database, s: ReadingSession): Promise<boolean> {
+  if (s.finished_on) return false;
+  const book = await getBook(db, s.book_id);
+  if (book?.status !== "reading") return false;
+  return (await openSession(db, s.book_id))?.id === s.id;
 }
 
 export async function getSession(db: D1Database, id: number): Promise<ReadingSession | null> {
@@ -250,6 +263,11 @@ export async function editSession(
   if (!cur) return null;
   const started = edit.started_on !== undefined ? edit.started_on : cur.started_on;
   const finished = edit.finished_on !== undefined ? edit.finished_on : cur.finished_on;
+  // 本の状態と回が食い違わないように:
+  //   読了した回の読了日は空にできない（読書中に戻すのは状態のボタンで）
+  //   今読んでいる回に読了日は入れない（「読了」ボタンで閉じる）
+  if (cur.finished_on && !finished) throw new SessionDateError("finished_required");
+  if (!cur.finished_on && finished && (await isCurrentReading(db, cur))) throw new SessionDateError("close_with_button");
   checkSession(started, finished);
   const [s, b] = await db.batch([
     db
@@ -267,6 +285,8 @@ export async function addSession(
   started: string | null,
   finished: string | null,
 ): Promise<{ session: ReadingSession; book: Book }> {
+  // 足せるのは読み終えた回だけ（読書中の回は「読んでる」ボタンで始める）
+  if (!finished) throw new SessionDateError("finished_required");
   checkSession(started, finished);
   const at = nowIso();
   const [s, b] = await db.batch([
@@ -281,6 +301,7 @@ export async function addSession(
 export async function deleteSession(db: D1Database, id: number): Promise<Book | null> {
   const cur = await getSession(db, id);
   if (!cur) return null;
+  if (await isCurrentReading(db, cur)) throw new SessionDateError("open_session_delete");
   const [, b] = await db.batch([db.prepare("DELETE FROM reading_session WHERE id = ?").bind(id), syncFinished(db, cur.book_id)]);
   return (b!.results as Book[])[0] ?? null;
 }

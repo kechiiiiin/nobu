@@ -18,18 +18,18 @@ CREATE INDEX reading_session_book ON reading_session(book_id, id);
 
 -- ---- 既存データの移行（book_event を順に見たのと同じ結果になるように）。何度流しても重複しない ----
 
--- 1) 「読んでる」への切り替えで回が始まる。ただし直前の「読んでる」の後にまだ読了していなければ、同じ回の続き（新しい回にしない）。
---    回を閉じるのは、始まりの後で最初の「読了」（間にある「読んでる」は続きなので数えない）
---    ※ 2026-09-23 修正（初版は間の「読んでる」で閉じ損ねていた。適用済みの D1 は 0003 で修復）
+-- 1) 「読んでる」への切り替えで回が始まる。ただし直前の「読んでる」の後にまだ読了していなければ、同じ回の続き（新しい回にしない）
 INSERT INTO reading_session (book_id, started_on, finished_on, created_event_id, finished_event_id, created_at, updated_at)
 SELECT r.book_id,
        date(r.at, '+9 hours'),
        (SELECT date(f.at, '+9 hours') FROM book_event f
          WHERE f.book_id = r.book_id AND f.to_status = 'read' AND f.id > r.id
+           AND NOT EXISTS (SELECT 1 FROM book_event x WHERE x.book_id = r.book_id AND x.to_status = 'reading' AND x.id > r.id AND x.id < f.id)
          ORDER BY f.id LIMIT 1),
        r.id,
        (SELECT f.id FROM book_event f
          WHERE f.book_id = r.book_id AND f.to_status = 'read' AND f.id > r.id
+           AND NOT EXISTS (SELECT 1 FROM book_event x WHERE x.book_id = r.book_id AND x.to_status = 'reading' AND x.id > r.id AND x.id < f.id)
          ORDER BY f.id LIMIT 1),
        r.at, r.at
   FROM book_event r
@@ -47,11 +47,10 @@ SELECT f.book_id, NULL, date(f.at, '+9 hours'), f.id, f.id, f.at, f.at
  WHERE f.to_status = 'read'
    AND NOT EXISTS (SELECT 1 FROM reading_session s WHERE s.finished_event_id = f.id);
 
--- 3) 読了日を手で直していた本は、その日付を最新の回（最後に読了した回）に移す
---    ※ 2026-09-23 修正（初版は MAX(id) で選んでいて、手順2の回が後から入るため古い回を上書きしていた）
+-- 3) 読了日を手で直していた本は、その日付を最新の回に移す
 UPDATE reading_session
    SET finished_on = (SELECT date(b.finished_at, '+9 hours') FROM book b WHERE b.id = reading_session.book_id)
- WHERE finished_event_id IN (SELECT MAX(finished_event_id) FROM reading_session WHERE finished_on IS NOT NULL GROUP BY book_id)
+ WHERE id IN (SELECT MAX(id) FROM reading_session WHERE finished_on IS NOT NULL GROUP BY book_id)
    AND (SELECT b.finished_at FROM book b WHERE b.id = reading_session.book_id) LIKE '____-__-__T%';
 
 -- 4) 読了日だけあって回が無い本（念のため）

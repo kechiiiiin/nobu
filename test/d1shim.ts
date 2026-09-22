@@ -31,7 +31,9 @@ class Stmt {
   }
 }
 
-export function makeDb(migrations: string[] = ["migrations/0001_init.sql", "migrations/0002_reading_session.sql"]) {
+export function makeDb(
+  migrations: string[] = ["migrations/0001_init.sql", "migrations/0002_reading_session.sql", "migrations/0003_repair_reading_session.sql"],
+) {
   const raw = new DatabaseSync(":memory:");
   raw.exec("PRAGMA foreign_keys = ON;");
   for (const m of migrations) raw.exec(readFileSync(m, "utf8"));

@@ -44,33 +44,33 @@ test("回: 読んでる→読了で1回、読了済みから読んでるで再�
   const { db } = makeDb();
   const r = await insertBook(db, nb("本A"), "want", "search");
   let b = r.book;
-  const s1 = await changeStatus(db, b, "reading", "page", "2026-09-10");
-  assert.equal(s1.session?.started_on, "2026-09-10");
+  const s1 = await changeStatus(db, b, "reading", "page", "2026-08-10");
+  assert.equal(s1.session?.started_on, "2026-08-10");
   assert.equal(s1.session?.finished_on, null);
   // 一覧に読み始めた日
-  assert.equal((await listBooks(db, "reading"))[0]!.reading_since, "2026-09-10");
-  const s2 = await changeStatus(db, s1.book, "read", "page", "2026-09-23");
+  assert.equal((await listBooks(db, "reading"))[0]!.reading_since, "2026-08-10");
+  const s2 = await changeStatus(db, s1.book, "read", "page", "2026-08-23");
   assert.equal(s2.session?.id, s1.session?.id);
-  assert.equal(s2.session?.finished_on, "2026-09-23");
-  assert.equal(s2.book.finished_at, "2026-09-23");
+  assert.equal(s2.session?.finished_on, "2026-08-23");
+  assert.equal(s2.book.finished_at, "2026-08-23");
   // 読了日より前には閉じられない
-  const c = await insertBook(db, nb("本C"), "reading", "search", "2026-09-20");
-  await assert.rejects(changeStatus(db, c.book, "read", "page", "2026-09-19"), SessionDateError);
+  const c = await insertBook(db, nb("本C"), "reading", "search", "2026-08-20");
+  await assert.rejects(changeStatus(db, c.book, "read", "page", "2026-08-19"), SessionDateError);
   // 再読
-  const s3 = await changeStatus(db, s2.book, "reading", "page", "2026-10-01");
+  const s3 = await changeStatus(db, s2.book, "reading", "page", "2026-09-01");
   assert.notEqual(s3.session?.id, s1.session?.id);
-  const s4 = await changeStatus(db, s3.book, "read", "page", "2026-10-05");
-  assert.equal(s4.book.finished_at, "2026-10-05");
+  const s4 = await changeStatus(db, s3.book, "read", "page", "2026-09-05");
+  assert.equal(s4.book.finished_at, "2026-09-05");
   const d = (await getDetail(db, b.id))!;
   assert.deepEqual(
     d.sessions.map((s) => [s.started_on, s.finished_on]),
     [
-      ["2026-10-01", "2026-10-05"],
-      ["2026-09-10", "2026-09-23"],
+      ["2026-09-01", "2026-09-05"],
+      ["2026-08-10", "2026-08-23"],
     ],
   );
   // 読了タブは最新の読了日の順
-  await changeStatus(db, (await getBook(db, c.book.id))!, "read", "page", "2026-09-30");
+  await changeStatus(db, (await getBook(db, c.book.id))!, "read", "page", "2026-09-02");
   assert.deepEqual((await listBooks(db, "read")).map((x) => x.title), ["本A", "本C"]);
 });
 
@@ -88,17 +88,17 @@ test("回: 読み始め不明の読了・中断してからの再開・登録時
   assert.equal((await getDetail(db, a.book.id))!.sessions.length, 2);
 
   // 読んでる → 買った（中断）→ 読んでる は同じ回の続き
-  const b = await insertBook(db, nb("中断"), "reading", "search", "2026-09-10");
+  const b = await insertBook(db, nb("中断"), "reading", "search", "2026-08-10");
   const p = await changeStatus(db, b.book, "bought", "page", "2026-09-11");
   const q = await changeStatus(db, p.book, "reading", "page", "2026-09-15");
   assert.equal(q.session?.id, b.session?.id);
-  assert.equal(q.session?.started_on, "2026-09-10");
+  assert.equal(q.session?.started_on, "2026-08-10");
   assert.equal((await getDetail(db, b.book.id))!.sessions.length, 1);
 });
 
 test("回: 取り消しで回も戻る", async () => {
   const { db } = makeDb();
-  const r = await insertBook(db, nb("取り消し"), "reading", "search", "2026-09-10");
+  const r = await insertBook(db, nb("取り消し"), "reading", "search", "2026-08-10");
   const done = await changeStatus(db, r.book, "read", "page", "2026-09-20");
   // 読了を取り消す → 回が開き直り、読了日も消える
   const u1 = await undoEvent(db, done.event_id!);
@@ -106,16 +106,16 @@ test("回: 取り消しで回も戻る", async () => {
   assert.equal(u1.book?.status, "reading");
   assert.equal(u1.book?.finished_at, null);
   let d = (await getDetail(db, r.book.id))!;
-  assert.deepEqual(d.sessions.map((s) => [s.started_on, s.finished_on]), [["2026-09-10", null]]);
+  assert.deepEqual(d.sessions.map((s) => [s.started_on, s.finished_on]), [["2026-08-10", null]]);
   // 読了 → 再読の開始を取り消す → 再読の回だけ消える
   const d2 = await changeStatus(db, u1.book!, "read", "page", "2026-09-21");
-  const re = await changeStatus(db, d2.book, "reading", "page", "2026-10-01");
+  const re = await changeStatus(db, d2.book, "reading", "page", "2026-09-01");
   const u2 = await undoEvent(db, re.event_id!);
   assert.ok(!("error" in u2));
   assert.equal(u2.book?.status, "read");
   assert.equal(u2.book?.finished_at, "2026-09-21");
   d = (await getDetail(db, r.book.id))!;
-  assert.deepEqual(d.sessions.map((s) => [s.started_on, s.finished_on]), [["2026-09-10", "2026-09-21"]]);
+  assert.deepEqual(d.sessions.map((s) => [s.started_on, s.finished_on]), [["2026-08-10", "2026-09-21"]]);
   // 登録の取り消しは本ごと（回も消える）
   const s = await insertBook(db, nb("スキャン"), "read", "scan", "2026-09-22");
   await undoEvent(db, s.event_id);
@@ -124,16 +124,19 @@ test("回: 取り消しで回も戻る", async () => {
 
 test("回: 日付の手直し・追加・削除と読了日の同期", async () => {
   const { db } = makeDb();
-  const r = await insertBook(db, nb("手直し"), "reading", "search", "2026-09-10");
-  const done = await changeStatus(db, r.book, "read", "page", "2026-09-23");
+  const r = await insertBook(db, nb("手直し"), "reading", "search", "2026-08-10");
+  const done = await changeStatus(db, r.book, "read", "page", "2026-08-23");
   const sid = done.session!.id;
   const e1 = await editSession(db, sid, { started_on: "2026-09-09", finished_on: "2026-09-22" });
   assert.equal(e1?.book.finished_at, "2026-09-22");
   await assert.rejects(editSession(db, sid, { started_on: "2026-09-30" }), SessionDateError);
-  await assert.rejects(editSession(db, sid, { started_on: null, finished_on: null }), SessionDateError);
+  await assert.rejects(editSession(db, sid, { started_on: null, finished_on: null }), /finished_required/);
+  await assert.rejects(editSession(db, sid, { finished_on: null }), /finished_required/);
+  await assert.rejects(editSession(db, sid, { finished_on: addDays(jstToday(), 1) }), /future_date/);
   // 読み始め不明にする
   assert.equal((await editSession(db, sid, { started_on: null }))?.session.started_on, null);
   // 過去の読書を足す
+  await assert.rejects(addSession(db, r.book.id, "2020-01-01", null), /finished_required/);
   const add = await addSession(db, r.book.id, "2020-01-01", "2020-01-31");
   assert.equal(add.book.finished_at, "2026-09-22");
   // 最新の回を消すと読了日は前の回へ
@@ -143,7 +146,33 @@ test("回: 日付の手直し・追加・削除と読了日の同期", async () 
   assert.equal((await getBook(db, r.book.id))?.finished_at, null);
 });
 
-test("マイグレーション 0002: 既存の履歴から回を作る（冪等）", () => {
+test("回: 本の状態と食い違う手直しは断る・開始不明にした回の読了を取り消せる", async () => {
+  const { db } = makeDb();
+  const r = await insertBook(db, nb("読書中"), "reading", "search", "2026-08-10");
+  const open = r.session!;
+  // 今読んでいる回に読了日は入れられない・消せない
+  await assert.rejects(editSession(db, open.id, { finished_on: "2026-08-20" }), /close_with_button/);
+  await assert.rejects(deleteSession(db, open.id), /open_session_delete/);
+  // 読み始めた日は直せる
+  assert.equal((await editSession(db, open.id, { started_on: "2026-08-09" }))?.session.started_on, "2026-08-09");
+  // 中断中（状態が読んでる以外）の開いた回は、読了日を入れて閉じられる
+  const paused = await changeStatus(db, (await getBook(db, r.book.id))!, "bought", "page", "2026-08-11");
+  assert.equal((await editSession(db, open.id, { finished_on: "2026-08-11" }))?.session.finished_on, "2026-08-11");
+  // 未来の日付で状態を変えられない
+  await assert.rejects(changeStatus(db, paused.book, "reading", "page", addDays(jstToday(), 1)), /future_date/);
+
+  // 読了 → 回の読み始めを「不明」に直す → 読了を取り消す: 500 にならず、その回は消える
+  const x = await insertBook(db, nb("取り消し2"), "reading", "search", "2026-08-01");
+  const done = await changeStatus(db, x.book, "read", "page", "2026-08-05");
+  await editSession(db, done.session!.id, { started_on: null });
+  const u = await undoEvent(db, done.event_id!);
+  assert.ok(!("error" in u));
+  assert.equal(u.book?.status, "reading");
+  assert.equal((await getDetail(db, x.book.id))!.sessions.length, 0);
+});
+
+/** 移行前の状態（0001 のみ）に、いろいろな履歴の本を入れる */
+function legacyDb() {
   const { raw } = makeDb(["migrations/0001_init.sql"]);
   const book = (id: number, status: string, finishedAt: string | null) =>
     raw
@@ -178,29 +207,81 @@ test("マイグレーション 0002: 既存の履歴から回を作る（冪等�
   // 5: 気になるだけ
   book(5, "want", null);
   ev(5, null, "want", "2026-09-01T03:00:00Z");
+  // 6: 読んでる → 買った → 読んでる → 読了（中断をはさんでも1回。0002 初版はここで割れた）
+  book(6, "read", "2026-09-08T03:00:00Z");
+  ev(6, null, "reading", "2026-09-01T03:00:00Z");
+  ev(6, "reading", "bought", "2026-09-02T03:00:00Z");
+  ev(6, "bought", "reading", "2026-09-03T03:00:00Z");
+  ev(6, "reading", "read", "2026-09-08T03:00:00Z");
+  // 7: 読了で登録 → 再読 → 読了（0002 初版は最初の回の読了日を上書きした）
+  book(7, "read", "2026-09-10T03:00:00Z");
+  ev(7, null, "read", "2026-09-01T03:00:00Z");
+  ev(7, "read", "reading", "2026-09-05T03:00:00Z");
+  ev(7, "reading", "read", "2026-09-10T03:00:00Z");
+  // 8: 7 と同じだが、読了日を手で 9/12 に直していた（手で直した日付は最後の回へ）
+  book(8, "read", "2026-09-12T03:00:00Z");
+  ev(8, null, "read", "2026-09-01T03:00:00Z");
+  ev(8, "read", "reading", "2026-09-05T03:00:00Z");
+  ev(8, "reading", "read", "2026-09-10T03:00:00Z");
+  return raw;
+}
 
-  const sql = readFileSync("migrations/0002_reading_session.sql", "utf8");
+type Raw = ReturnType<typeof legacyDb>;
+const sessionsOf = (raw: Raw) =>
+  (raw.prepare("SELECT book_id, started_on, finished_on FROM reading_session ORDER BY book_id, COALESCE(started_on, finished_on), id").all() as {
+    book_id: number;
+    started_on: string | null;
+    finished_on: string | null;
+  }[]).map((s) => ({ ...s }));
+const finishedOf = (raw: Raw) =>
+  (raw.prepare("SELECT finished_at FROM book ORDER BY id").all() as { finished_at: string | null }[]).map((r) => r.finished_at);
+
+const EXPECTED_SESSIONS = [
+  { book_id: 1, started_on: "2026-09-10", finished_on: "2026-09-23" },
+  { book_id: 1, started_on: "2026-10-01", finished_on: null },
+  { book_id: 2, started_on: null, finished_on: "2026-09-05" },
+  { book_id: 3, started_on: "2026-09-01", finished_on: null },
+  { book_id: 4, started_on: "2026-09-01", finished_on: "2026-09-10" },
+  { book_id: 4, started_on: null, finished_on: "2026-09-30" },
+  { book_id: 6, started_on: "2026-09-01", finished_on: "2026-09-08" },
+  { book_id: 7, started_on: null, finished_on: "2026-09-01" },
+  { book_id: 7, started_on: "2026-09-05", finished_on: "2026-09-10" },
+  { book_id: 8, started_on: null, finished_on: "2026-09-01" },
+  { book_id: 8, started_on: "2026-09-05", finished_on: "2026-09-12" },
+];
+const EXPECTED_FINISHED = ["2026-09-23", "2026-09-05", null, "2026-09-30", null, "2026-09-08", "2026-09-10", "2026-09-12"];
+const readSql = (p: string) => readFileSync(p, "utf8");
+const withoutCreate = (sql: string) => sql.replace(/CREATE TABLE reading_session[\s\S]*?\);\s*CREATE INDEX[^;]*;/, "");
+
+test("マイグレーション 0002（修正版）: 既存の履歴から回を作る・冪等・0003 は何もしない", () => {
+  const raw = legacyDb();
+  const sql = readSql("migrations/0002_reading_session.sql");
   raw.exec(sql);
-  const sessions = () =>
-    raw.prepare("SELECT book_id, started_on, finished_on FROM reading_session ORDER BY book_id, COALESCE(started_on, finished_on), id").all() as {
-      book_id: number;
-      started_on: string | null;
-      finished_on: string | null;
-    }[];
-  const expected = [
-    { book_id: 1, started_on: "2026-09-10", finished_on: "2026-09-23" },
-    { book_id: 1, started_on: "2026-10-01", finished_on: null },
-    { book_id: 2, started_on: null, finished_on: "2026-09-05" },
-    { book_id: 3, started_on: "2026-09-01", finished_on: null },
-    { book_id: 4, started_on: "2026-09-01", finished_on: "2026-09-10" },
-    { book_id: 4, started_on: null, finished_on: "2026-09-30" },
-  ];
-  assert.deepEqual(sessions().map((s) => ({ ...s })), expected);
-  const finished = () => (raw.prepare("SELECT id, finished_at FROM book ORDER BY id").all() as { id: number; finished_at: string | null }[]).map((r) => r.finished_at);
-  assert.deepEqual(finished(), ["2026-09-23", "2026-09-05", null, "2026-09-30", null]);
-
+  assert.deepEqual(sessionsOf(raw), EXPECTED_SESSIONS);
+  assert.deepEqual(finishedOf(raw), EXPECTED_FINISHED);
   // もう一度流しても増えない（表の作成を除いた移行部分）
-  raw.exec(sql.replace(/CREATE TABLE reading_session[\s\S]*?\);\s*CREATE INDEX[^;]*;/, ""));
-  assert.deepEqual(sessions().map((s) => ({ ...s })), expected);
-  assert.deepEqual(finished(), ["2026-09-23", "2026-09-05", null, "2026-09-30", null]);
+  raw.exec(withoutCreate(sql));
+  raw.exec(readSql("migrations/0003_repair_reading_session.sql"));
+  raw.exec(readSql("migrations/0003_repair_reading_session.sql"));
+  assert.deepEqual(sessionsOf(raw), EXPECTED_SESSIONS);
+  assert.deepEqual(finishedOf(raw), EXPECTED_FINISHED);
+});
+
+test("マイグレーション 0003: 0002 初版の割れ・上書きを修復する（冪等）", () => {
+  const raw = legacyDb();
+  raw.exec(readSql("test/fixtures/0002_reading_session.v1.sql"));
+  // 初版の誤りを再現していること
+  const broken = sessionsOf(raw);
+  assert.ok(broken.some((s) => s.book_id === 6 && s.finished_on === null), "本6 が開いたまま");
+  assert.ok(broken.some((s) => s.book_id === 7 && s.started_on === null && s.finished_on === "2026-09-10"), "本7 の最初の回が上書き");
+  raw.exec(readSql("migrations/0003_repair_reading_session.sql"));
+  assert.deepEqual(sessionsOf(raw), EXPECTED_SESSIONS);
+  assert.deepEqual(finishedOf(raw), EXPECTED_FINISHED);
+  raw.exec(readSql("migrations/0003_repair_reading_session.sql"));
+  assert.deepEqual(sessionsOf(raw), EXPECTED_SESSIONS);
+  // 取り消しの印もつながっている（本6 の読了を取り消せば、その回が開き直る）
+  const s6 = raw.prepare("SELECT created_event_id, finished_event_id FROM reading_session WHERE book_id = 6").all() as { created_event_id: number; finished_event_id: number }[];
+  assert.equal(s6.length, 1);
+  const lastRead6 = raw.prepare("SELECT MAX(id) AS id FROM book_event WHERE book_id = 6 AND to_status = 'read'").get() as { id: number };
+  assert.equal(s6[0]!.finished_event_id, lastRead6.id);
 });
