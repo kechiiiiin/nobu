@@ -39,5 +39,6 @@ enabled = true
 
 # 秘密は `wrangler secret put` で入れる（ローカルは .dev.vars）:
 #   CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD / ALLOWED_EMAILS
+#   ACCESS_SERVICE_CLIENT_IDS（iPhone アプリ nobu-ios のサービストークンの Client ID。未設定なら1本も通さない）
 #   RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY（未設定なら楽天を飛ばして NDL・openBD・版元ドットコムだけで動く）
 # ⚠️ DEV_BYPASS_AUTH をここ（[vars]）に書かない。CI が検査して落とす。

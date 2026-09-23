@@ -9,6 +9,11 @@ export interface Env {
   CF_ACCESS_AUD?: string;
   /** カンマ区切り。空なら全員拒否 */
   ALLOWED_EMAILS?: string;
+  /**
+   * サービストークン（iPhone ネイティブアプリ nobu-ios）の Client ID。カンマ区切り。
+   * JWT の `common_name` と照合する。**空ならサービストークンは1本も通さない**
+   */
+  ACCESS_SERVICE_CLIENT_IDS?: string;
 
   // ---- 楽天ブックス書籍検索 API（未設定なら楽天を飛ばす） ----
   RAKUTEN_APPLICATION_ID?: string;

@@ -78,7 +78,15 @@ npm run check                    # 画面のビルド・型チェック（worker
 
 `main` に push すると GitHub Actions（`.github/workflows/deploy.yml`）が テスト → `d1 migrations apply nobu --remote` → `wrangler deploy` の順に流す。GitHub secrets は `CLOUDFLARE_API_TOKEN`（Workers・D1 を触れるトークン）と `CLOUDFLARE_ACCOUNT_ID`。
 
-Worker secrets（`wrangler secret put`）: `CF_ACCESS_TEAM_DOMAIN`・`CF_ACCESS_AUD`・`ALLOWED_EMAILS`（必須・無ければ全部 401/403）、`RAKUTEN_APPLICATION_ID`・`RAKUTEN_ACCESS_KEY`（任意）。
+Worker secrets（`wrangler secret put`）: `CF_ACCESS_TEAM_DOMAIN`・`CF_ACCESS_AUD`・`ALLOWED_EMAILS`（必須・無ければ全部 401/403）、`RAKUTEN_APPLICATION_ID`・`RAKUTEN_ACCESS_KEY`（任意）、`ACCESS_SERVICE_CLIENT_IDS`（任意・下記）。
+
+## iPhone ネイティブアプリ（nobu-ios）からの認証
+
+同じ API を iPhone のネイティブアプリ（`~/work/nobu-ios`）も叩く。ブラウザのような Google ログインができないので、**Cloudflare Access のサービストークン**（`CF-Access-Client-Id`／`CF-Access-Client-Secret` の2ヘッダ）を使う。
+
+- Access アプリ `nobu` に **Service Auth** のポリシーを足す（decision `non_identity`・include `service_token`）。エッジはこれで通る
+- Worker 側でも二重に確かめる（`src/auth.ts`）。サービストークンの JWT には **`email` が無く `common_name`（＝Client ID）が入る**ので、`ACCESS_SERVICE_CLIENT_IDS`（カンマ区切り）に載っている Client ID だけ通す。**未設定ならサービストークンは1本も通さない**（メールの allowlist は広げない）
+- `email` がある JWT は今までどおりメールの allowlist だけで判断する。サービストークンの側には逃げられない（`test/auth.test.ts`）
 
 ## 未確認・決めていないこと
 
