@@ -1,6 +1,20 @@
 // D1 の読み書き
 
-import type { Book, BookDetail, BookEvent, BookNote, Candidate, CoverKind, MetaSource, ReadingDay, ReadingSession, Status } from "../shared/types.ts";
+import type {
+  Book,
+  BookDetail,
+  BookEvent,
+  BookNote,
+  Candidate,
+  CoverKind,
+  MetaSource,
+  ReadingDay,
+  ReadingSession,
+  Status,
+  TimelineBook,
+  TimelineItem,
+  TimelineResponse,
+} from "../shared/types.ts";
 import { jstToday } from "../shared/dates.ts";
 
 export const nowIso = () => new Date().toISOString();
@@ -355,6 +369,118 @@ export async function markDay(db: D1Database, bookId: number, on: string): Promi
 export async function unmarkDay(db: D1Database, bookId: number, on: string): Promise<boolean> {
   const r = await db.prepare(`DELETE FROM reading_day WHERE book_id = ? AND "on" = ?`).bind(bookId, on).run();
   return (r.meta.changes ?? 0) > 0;
+}
+
+// ---- タイムライン（「記録」）。状態の変化（book_event）と読んだ日（reading_day）を併合して新しい順に
+//
+// 並びの鍵（＝カーソル）は文字列ひとつにまとめてある。D1 側だけで比較・切り出しができるようにするため:
+//   状態の変化: '2026-09-23T21:04:07#e000000000128'（JST の日時 ＋ イベント id。同じ時刻は id の大きい方が先）
+//   読んだ日  : '2026-09-23T00:00:00#d'            （その日の「読んだ」はまとめて1件）
+// 降順に並べると、同じ日の中では「状態の変化が新しい順 → 最後に『読んだ』」になる
+// （'#d' の時刻は 00:00:00 なので、その日のどの変化よりも後ろに来る）。
+//
+// 重複のまとめ方: 同じ本・同じ日に状態の変化があるなら、その本はその日の「読んだ」から省く。
+// 「読み始めた」「読了」は reading_day を自動で作るので、素直に併合すると必ず二重になるため。
+export const TIMELINE_CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}#(e\d{12}|d)$/;
+
+/** その日に状態も変えた本を「読んだ」から省くための条件（併合と取り出しで同じものを使う） */
+const NOT_ALSO_CHANGED = `NOT EXISTS (
+  SELECT 1 FROM book_event e2 WHERE e2.book_id = d.book_id AND date(e2.at, '+9 hours') = d."on"
+)`;
+
+const TIMELINE_PAGE_SQL = `
+SELECT * FROM (
+  SELECT 'status' AS kind,
+         strftime('%Y-%m-%dT%H:%M:%S', e.at, '+9 hours') || '#e' || printf('%012d', e.id) AS cursor,
+         date(e.at, '+9 hours') AS day,
+         e.id AS event_id, e.at AS at, e.from_status AS from_status, e.to_status AS to_status, e.via AS via,
+         b.id AS book_id, b.title AS title, b.cover_url AS cover_url, b.cover_kind AS cover_kind
+  FROM book_event e JOIN book b ON b.id = e.book_id
+  UNION ALL
+  SELECT 'read', d."on" || 'T00:00:00#d', d."on",
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+  FROM reading_day d
+  WHERE ${NOT_ALSO_CHANGED}
+  GROUP BY d."on"
+)
+WHERE (?1 IS NULL OR cursor < ?1)
+ORDER BY cursor DESC
+LIMIT ?2`;
+
+interface TimelineRow {
+  kind: "status" | "read";
+  cursor: string;
+  day: string;
+  event_id: number | null;
+  at: string | null;
+  from_status: Status | null;
+  to_status: Status | null;
+  via: string | null;
+  book_id: number | null;
+  title: string | null;
+  cover_url: string | null;
+  cover_kind: CoverKind | null;
+}
+
+export const TIMELINE_LIMIT_DEFAULT = 50;
+export const TIMELINE_LIMIT_MAX = 100;
+
+/**
+ * 新しい順に limit 件。`before` を渡すとその続き（より古い方）。
+ * 全件を読んで並べ替えたりはしない——並びも切り出しも D1 の中で済ませ、
+ * 「読んだ」に出す本だけ、ページに入った日ぶんを2本目のクエリで引く。
+ */
+export async function listTimeline(db: D1Database, before: string | null = null, limit = TIMELINE_LIMIT_DEFAULT): Promise<TimelineResponse> {
+  const n = Math.min(Math.max(Math.trunc(limit) || TIMELINE_LIMIT_DEFAULT, 1), TIMELINE_LIMIT_MAX);
+  // 1件多く取って「次がある」を確かめる（件数を数える追加のクエリを打たずに済む）
+  const rows = (await db.prepare(TIMELINE_PAGE_SQL).bind(before, n + 1).all<TimelineRow>()).results;
+  const hasMore = rows.length > n;
+  const page = hasMore ? rows.slice(0, n) : rows;
+
+  // ページに入った「読んだ」の日ぶんだけ、本を引く
+  const days = page.filter((r) => r.kind === "read").map((r) => r.day);
+  const byDay = new Map<string, TimelineBook[]>();
+  if (days.length > 0) {
+    const read = (
+      await db
+        .prepare(
+          `SELECT d."on" AS day, b.id AS id, b.title AS title, b.cover_url AS cover_url, b.cover_kind AS cover_kind
+           FROM reading_day d JOIN book b ON b.id = d.book_id
+           WHERE d."on" IN (${days.map(() => "?").join(",")}) AND ${NOT_ALSO_CHANGED}
+           ORDER BY d."on" DESC, d.id ASC`,
+        )
+        .bind(...days)
+        .all<TimelineBook & { day: string }>()
+    ).results;
+    for (const r of read) {
+      const list = byDay.get(r.day) ?? [];
+      list.push({ id: r.id, title: r.title, cover_url: r.cover_url, cover_kind: r.cover_kind });
+      byDay.set(r.day, list);
+    }
+  }
+
+  const items: TimelineItem[] = [];
+  for (const r of page) {
+    if (r.kind === "read") {
+      const books = byDay.get(r.day) ?? [];
+      // 併合の条件は上と同じなので空にはならないはずだが、空の見出しを出さない
+      if (books.length > 0) items.push({ kind: "read", cursor: r.cursor, day: r.day, books });
+      continue;
+    }
+    items.push({
+      kind: "status",
+      cursor: r.cursor,
+      day: r.day,
+      event_id: r.event_id!,
+      at: r.at!,
+      from_status: r.from_status,
+      to_status: r.to_status!,
+      via: r.via,
+      book: { id: r.book_id!, title: r.title!, cover_url: r.cover_url, cover_kind: r.cover_kind ?? "none" },
+    });
+  }
+  // 次のページは「取れた最後の行」から。省いた行があっても取りこぼさない
+  return { items, next: hasMore ? (page[page.length - 1]?.cursor ?? null) : null };
 }
 
 // finished_at は読書の回から同期するので、ここでは直させない

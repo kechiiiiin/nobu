@@ -52,6 +52,7 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | `POST /api/books/:id/refetch` | 書誌の取り直し |
 | `POST /api/books/:id/sessions`・`PATCH/DELETE /api/sessions/:id` | 読書の回（`started_on`／`finished_on` は JST の `YYYY-MM-DD`、null＝不明／読書中）。`PATCH /api/books/:id` の `status` には `on`（日付・既定は今日）を添えられる |
 | `GET/POST /api/books/:id/days`・`DELETE /api/books/:id/days/:on` | 読んだ日（`on` は JST の `YYYY-MM-DD`。POST で省くと今日。同じ日を二度押しても増えない） |
+| `GET /api/timeline?before=&limit=` | タイムライン（アプリの「記録」タブ）。状態の変化（`book_event`）と読んだ日（`reading_day`）を **D1 の中で併合**して新しい順に。`before` は前のページの `next` をそのまま渡す、`limit` は 1〜100・既定 50。`items[]` は `kind: "status"`（1件ずつ）と `kind: "read"`（その日に読んだ本をまとめて1件）。**同じ本・同じ日に状態の変化があるときは、その本をその日の `read` から省く**（「読み始めた」「読了」は読んだ日を自動で作るので、素直に併合すると必ず二重になるため） |
 | `POST /api/events/:id/undo` | 取り消し（登録イベントなら本ごと消す／状態変更なら戻す。最新のイベントだけ） |
 | `POST /api/books/:id/notes`・`PATCH/DELETE /api/notes/:id` | ひとこと |
 

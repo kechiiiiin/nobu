@@ -24,6 +24,10 @@ import {
   listDays,
   markDay,
   unmarkDay,
+  listTimeline,
+  TIMELINE_CURSOR,
+  TIMELINE_LIMIT_DEFAULT,
+  TIMELINE_LIMIT_MAX,
   SessionDateError,
   type BookEdit,
   type NewBook,
@@ -395,6 +399,24 @@ app.delete("/api/books/:id/days/:on", async (c) => {
   const on = c.req.param("on");
   if (!isDateOnly(on)) return c.json({ error: "bad_date" }, 400);
   return (await unmarkDay(c.env.DB, id, on)) ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
+});
+
+// ---- タイムライン（「記録」）。状態の変化と読んだ日を併合して新しい順に
+
+/**
+ * `?before=` は前のページの `next`（そのまま渡す）。`?limit=` は 1〜100（既定 50）。
+ * 同じ本・同じ日に状態の変化があるときは、その本をその日の「読んだ」から省いてある
+ */
+app.get("/api/timeline", async (c) => {
+  const before = c.req.query("before");
+  if (before !== undefined && before !== "" && !TIMELINE_CURSOR.test(before)) return c.json({ error: "bad_cursor" }, 400);
+  const raw = c.req.query("limit");
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < 1 || n > TIMELINE_LIMIT_MAX) return c.json({ error: "bad_limit" }, 400);
+  }
+  const limit = raw ? Number(raw) : TIMELINE_LIMIT_DEFAULT;
+  return c.json(await listTimeline(c.env.DB, before || null, limit));
 });
 
 app.delete("/api/books/:id", async (c) => {

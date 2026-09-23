@@ -129,3 +129,64 @@ export interface BookDetail {
   /** 読んだ日。新しい順 */
   days: ReadingDay[];
 }
+
+// ---- タイムライン（「記録」）。状態の変化と「読んだ日」を、JST の日ごとに新しい順で
+
+/** タイムラインに出す本（書影と書名だけ） */
+export interface TimelineBook {
+  id: number;
+  title: string;
+  cover_url: string | null;
+  cover_kind: CoverKind;
+}
+
+/** 状態が変わった1件（book_event 1行） */
+export interface TimelineStatusItem {
+  kind: "status";
+  /** 並びのカーソル。次のページはこれより小さいもの（`?before=`） */
+  cursor: string;
+  /** JST の日付 'YYYY-MM-DD' */
+  day: string;
+  event_id: number;
+  /** サーバーの時刻（ISO8601・UTC） */
+  at: string;
+  from_status: Status | null;
+  to_status: Status;
+  via: string | null;
+  book: TimelineBook;
+}
+
+/** その日に読んだ本（reading_day。同じ日は1行にまとめる） */
+export interface TimelineReadItem {
+  kind: "read";
+  cursor: string;
+  day: string;
+  /** 入れた順。同じ日に状態も変えた本は、重なるのでここから省く */
+  books: TimelineBook[];
+}
+
+export type TimelineItem = TimelineStatusItem | TimelineReadItem;
+
+export interface TimelineResponse {
+  /** 新しい順 */
+  items: TimelineItem[];
+  /** 次のページの `?before=`。これ以上無ければ null */
+  next: string | null;
+}
+
+/** タイムラインの「何をしたか」 */
+export function eventLabel(from: Status | null, to: Status): string {
+  if (to === "reading" && from === "paused") return "読書を再開した";
+  switch (to) {
+    case "want":
+      return "気になるに入れた";
+    case "bought":
+      return "買った";
+    case "reading":
+      return "読み始めた";
+    case "paused":
+      return "保留にした";
+    case "read":
+      return "読了";
+  }
+}
