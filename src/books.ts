@@ -135,8 +135,10 @@ export async function insertBook(
   const stmts: D1PreparedStatement[] = [
     db
       .prepare(
-        `INSERT INTO book (isbn13, title, author, publisher, pubdate, cover_url, cover_kind, meta_source, status, status_at, finished_at, is_public, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING *`,
+        // user_id は「いちばん最初のユーザー」。いまは1人しかいない（他人が使える仕組みはまだ器だけ）。
+        // 他人も使えるようにするときは、ここをログインした本人の id に差し替える
+        `INSERT INTO book (user_id, isbn13, title, author, publisher, pubdate, cover_url, cover_kind, meta_source, status, status_at, finished_at, is_public, created_at, updated_at)
+         VALUES ((SELECT id FROM user ORDER BY id LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING *`,
       )
       .bind(nb.isbn13, nb.title, nb.author, nb.publisher, nb.pubdate, nb.cover_url, nb.cover_kind, nb.meta_source, status, at, finished, at, at),
     db

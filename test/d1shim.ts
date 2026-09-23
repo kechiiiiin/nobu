@@ -37,6 +37,7 @@ export function makeDb(
     "migrations/0002_reading_session.sql",
     "migrations/0003_repair_reading_session.sql",
     "migrations/0004_paused_and_reading_day.sql",
+    "migrations/0005_user.sql",
   ],
 ) {
   const raw = new DatabaseSync(":memory:");
