@@ -1,12 +1,14 @@
 // Worker と画面で共有する型
 
-export const STATUSES = ["want", "bought", "reading", "read"] as const;
+// paused（保留）＝読んでいる途中で止めているもの。読書の回は開いたまま残る
+export const STATUSES = ["want", "bought", "reading", "paused", "read"] as const;
 export type Status = (typeof STATUSES)[number];
 
 export const STATUS_LABEL: Record<Status, string> = {
   want: "気になる",
   bought: "買った",
   reading: "読んでる",
+  paused: "保留",
   read: "読了",
 };
 
@@ -66,6 +68,16 @@ export interface ReadingSession {
   updated_at: string;
 }
 
+/** 実際に読んだ日（JST の 'YYYY-MM-DD'）。同じ本の同じ日は1行だけ */
+export interface ReadingDay {
+  id: number;
+  book_id: number;
+  on: string;
+  /** 状態の切り替えで自動的に入った日の印（手で押した「今日読んだ」は null） */
+  created_event_id: number | null;
+  created_at: string;
+}
+
 export interface BookEvent {
   id: number;
   book_id: number;
@@ -114,4 +126,6 @@ export interface BookDetail {
   events: BookEvent[];
   /** 新しい順 */
   sessions: ReadingSession[];
+  /** 読んだ日。新しい順 */
+  days: ReadingDay[];
 }

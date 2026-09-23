@@ -32,7 +32,12 @@ class Stmt {
 }
 
 export function makeDb(
-  migrations: string[] = ["migrations/0001_init.sql", "migrations/0002_reading_session.sql", "migrations/0003_repair_reading_session.sql"],
+  migrations: string[] = [
+    "migrations/0001_init.sql",
+    "migrations/0002_reading_session.sql",
+    "migrations/0003_repair_reading_session.sql",
+    "migrations/0004_paused_and_reading_day.sql",
+  ],
 ) {
   const raw = new DatabaseSync(":memory:");
   raw.exec("PRAGMA foreign_keys = ON;");

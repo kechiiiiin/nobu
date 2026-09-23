@@ -21,6 +21,9 @@ import {
   addSession,
   editSession,
   deleteSession,
+  listDays,
+  markDay,
+  unmarkDay,
   SessionDateError,
   type BookEdit,
   type NewBook,
@@ -359,6 +362,39 @@ app.delete("/api/sessions/:id", async (c) => {
     if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
     throw e;
   }
+});
+
+// ---- 読んだ日（その本を実際に読んだ日）。日付は JST の 'YYYY-MM-DD'
+
+app.get("/api/books/:id/days", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  if (!(await getBook(c.env.DB, id))) return c.json({ error: "not_found" }, 404);
+  return c.json({ days: await listDays(c.env.DB, id) });
+});
+
+/** 読んだ日にする。body の on を省くと今日。同じ日を二度押しても増えない */
+app.post("/api/books/:id/days", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  if (!(await getBook(c.env.DB, id))) return c.json({ error: "not_found" }, 404);
+  const b = await jsonBody(c);
+  const on = b.on === undefined || b.on === null ? jstToday() : isDateOnly(b.on) ? b.on : null;
+  if (!on) return c.json({ error: "bad_date" }, 400);
+  try {
+    return c.json({ day: await markDay(c.env.DB, id, on) }, 201);
+  } catch (e) {
+    if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
+});
+
+app.delete("/api/books/:id/days/:on", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  const on = c.req.param("on");
+  if (!isDateOnly(on)) return c.json({ error: "bad_date" }, 400);
+  return (await unmarkDay(c.env.DB, id, on)) ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404);
 });
 
 app.delete("/api/books/:id", async (c) => {

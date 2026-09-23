@@ -1,6 +1,6 @@
 // D1 の読み書き
 
-import type { Book, BookDetail, BookEvent, BookNote, Candidate, CoverKind, MetaSource, ReadingSession, Status } from "../shared/types.ts";
+import type { Book, BookDetail, BookEvent, BookNote, Candidate, CoverKind, MetaSource, ReadingDay, ReadingSession, Status } from "../shared/types.ts";
 import { jstToday } from "../shared/dates.ts";
 
 export const nowIso = () => new Date().toISOString();
@@ -14,16 +14,23 @@ export async function getBookByIsbn(db: D1Database, isbn13: string): Promise<Boo
 }
 
 export async function getDetail(db: D1Database, id: number): Promise<BookDetail | null> {
-  const [b, n, e, s] = await db.batch([
+  const [b, n, e, s, d] = await db.batch([
     db.prepare("SELECT * FROM book WHERE id = ?").bind(id),
     db.prepare("SELECT * FROM book_note WHERE book_id = ? ORDER BY id DESC").bind(id),
     db.prepare("SELECT * FROM book_event WHERE book_id = ? ORDER BY id DESC").bind(id),
     // 新しい順。読み始め不明の回は読了日で並べる
     db.prepare("SELECT * FROM reading_session WHERE book_id = ? ORDER BY COALESCE(started_on, finished_on) DESC, id DESC").bind(id),
+    db.prepare(`SELECT * FROM reading_day WHERE book_id = ? ORDER BY "on" DESC`).bind(id),
   ]);
   const book = (b!.results as Book[])[0];
   if (!book) return null;
-  return { book, notes: n!.results as BookNote[], events: e!.results as BookEvent[], sessions: s!.results as ReadingSession[] };
+  return {
+    book,
+    notes: n!.results as BookNote[],
+    events: e!.results as BookEvent[],
+    sessions: s!.results as ReadingSession[],
+    days: d!.results as ReadingDay[],
+  };
 }
 
 export async function listBooks(db: D1Database, status: Status | null): Promise<Book[]> {
@@ -130,6 +137,14 @@ export async function insertBook(
            SELECT book_id, ?, ?, id, CASE WHEN ? IS NULL THEN NULL ELSE id END, ?, ? FROM book_event WHERE id = last_insert_rowid() RETURNING *`,
         )
         .bind(status === "reading" ? on : null, finished, finished, at, at),
+      // 「読んでる」「読了」で登録した日は、そのまま「読んだ日」にもする
+      // （直前の INSERT ＝ いま作った回。そこから本とイベントを引く）
+      db
+        .prepare(
+          `INSERT INTO reading_day (book_id, "on", created_event_id, created_at)
+           SELECT book_id, ?, created_event_id, ? FROM reading_session WHERE id = last_insert_rowid()`,
+        )
+        .bind(on, at),
     );
   }
   const [ins, ev, ses] = await db.batch(stmts);
@@ -192,6 +207,18 @@ export async function changeStatus(
         .bind(book.id, on, at, at),
     );
   }
+  if (to === "reading" || to === "read") {
+    // その日は実際に読んだ日でもある（もう入っていれば増やさない＝手で押した印を上書きしない）
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO reading_day (book_id, "on", created_event_id, created_at)
+           VALUES (?1, ?2, (SELECT MAX(id) FROM book_event WHERE book_id = ?1), ?3)
+           ON CONFLICT (book_id, "on") DO NOTHING`,
+        )
+        .bind(book.id, on, at),
+    );
+  }
   stmts.push(syncFinished(db, book.id));
   const res = await db.batch(stmts);
   const updated = (res[res.length - 1]!.results as Book[])[0]!;
@@ -227,6 +254,8 @@ export async function undoEvent(db: D1Database, eventId: number): Promise<{ resu
     // 読み始めを「不明」に直した回は、読了を外すと中身が無くなるので消す（開き直すと CHECK 違反）
     db.prepare("DELETE FROM reading_session WHERE finished_event_id = ? AND started_on IS NULL").bind(ev.id),
     db.prepare("UPDATE reading_session SET finished_on = NULL, finished_event_id = NULL, updated_at = ? WHERE finished_event_id = ?").bind(at, ev.id),
+    // そのイベントで自動的に入った「読んだ日」も戻す（手で押した日は created_event_id が NULL なので残る）
+    db.prepare("DELETE FROM reading_day WHERE created_event_id = ?").bind(ev.id),
     db.prepare("DELETE FROM book_event WHERE id = ?").bind(ev.id),
     syncFinished(db, ev.book_id),
   ]);
@@ -304,6 +333,28 @@ export async function deleteSession(db: D1Database, id: number): Promise<Book | 
   if (await isCurrentReading(db, cur)) throw new SessionDateError("open_session_delete");
   const [, b] = await db.batch([db.prepare("DELETE FROM reading_session WHERE id = ?").bind(id), syncFinished(db, cur.book_id)]);
   return (b!.results as Book[])[0] ?? null;
+}
+
+// ---- 読んだ日（その本を実際に読んだ日を1日1行で）
+
+export async function listDays(db: D1Database, bookId: number): Promise<ReadingDay[]> {
+  return (await db.prepare(`SELECT * FROM reading_day WHERE book_id = ? ORDER BY "on" DESC`).bind(bookId).all<ReadingDay>()).results;
+}
+
+/** 読んだ日にする。もう入っていればその行を返す（同じ日は1行だけ） */
+export async function markDay(db: D1Database, bookId: number, on: string): Promise<ReadingDay> {
+  if (on > jstToday()) throw new SessionDateError("future_date");
+  await db
+    .prepare(`INSERT INTO reading_day (book_id, "on", created_event_id, created_at) VALUES (?, ?, NULL, ?) ON CONFLICT (book_id, "on") DO NOTHING`)
+    .bind(bookId, on, nowIso())
+    .run();
+  return (await db.prepare(`SELECT * FROM reading_day WHERE book_id = ? AND "on" = ?`).bind(bookId, on).first<ReadingDay>())!;
+}
+
+/** 読んだ日を取り消す。もともと入っていなければ false */
+export async function unmarkDay(db: D1Database, bookId: number, on: string): Promise<boolean> {
+  const r = await db.prepare(`DELETE FROM reading_day WHERE book_id = ? AND "on" = ?`).bind(bookId, on).run();
+  return (r.meta.changes ?? 0) > 0;
 }
 
 // finished_at は読書の回から同期するので、ここでは直させない
