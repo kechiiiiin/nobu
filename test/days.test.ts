@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { makeDb } from "./d1shim.ts";
 import { changeStatus, getBook, getDetail, insertBook, listDays, markDay, SessionDateError, unmarkDay, undoEvent, type NewBook } from "../src/books.ts";
-import { addDays, jstToday } from "../shared/dates.ts";
+import { addDays, addMonths, jstToday, monthDays, monthOf, weekday } from "../shared/dates.ts";
 
 const nb = (title: string): NewBook => ({
   isbn13: null,
@@ -18,6 +18,20 @@ const nb = (title: string): NewBook => ({
 });
 
 const daysOf = async (db: D1Database, bookId: number) => (await listDays(db, bookId)).map((d) => d.on);
+
+test("カレンダー: 月の前後・曜日・その月の日付", () => {
+  assert.equal(monthOf("2026-09-23"), "2026-09");
+  assert.equal(addMonths("2026-01", -1), "2025-12");
+  assert.equal(addMonths("2026-12", 1), "2027-01");
+  assert.equal(addMonths("2026-09", 0), "2026-09");
+  assert.equal(weekday("2026-09-23"), 3); // 水曜
+  assert.equal(weekday("2026-09-20"), 0); // 日曜
+  assert.equal(monthDays("2026-09").length, 30);
+  assert.equal(monthDays("2026-02").length, 28);
+  assert.equal(monthDays("2028-02").length, 29); // 閏年
+  assert.deepEqual(monthDays("2026-09").slice(0, 2), ["2026-09-01", "2026-09-02"]);
+  assert.equal(monthDays("2026-09").at(-1), "2026-09-30");
+});
 
 test("読んだ日: 押す・二度押しても増えない・消せる・未来は断る", async () => {
   const { db } = makeDb();
