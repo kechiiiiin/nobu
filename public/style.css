@@ -8,6 +8,7 @@
   --want: #8a7a55;
   --bought: #2f6f8f;
   --reading: #b5532e;
+  --paused: #7d6b8f;
   --read: #3f7a4a;
   --danger: #b03a2e;
   --shadow: 0 1px 2px rgba(60, 40, 20, 0.12), 0 2px 8px rgba(60, 40, 20, 0.06);
@@ -25,6 +26,7 @@
     --want: #c2b07e;
     --bought: #6cb2d4;
     --reading: #e0835d;
+    --paused: #b3a0c6;
     --read: #7fc08a;
     --danger: #e0685c;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -142,12 +144,15 @@ img.cover-l { filter: drop-shadow(0 2px 6px rgba(0,0,0,0.18)); }
 .book-meta p { margin: 0 0 4px; }
 .seg { display: flex; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 3px; }
 .seg button {
-  flex: 1; min-height: 46px; border: 0; border-radius: 9px; background: transparent; font-weight: 700; font-size: 15px; color: var(--muted);
+  /* 5つ並ぶので（気になる／買った／読んでる／保留／読了）、狭い画面でも入るよう小さめに */
+  flex: 1; min-height: 46px; padding: 0 2px; border: 0; border-radius: 9px; background: transparent;
+  font-weight: 700; font-size: 14px; white-space: nowrap; color: var(--muted);
 }
 .seg button.on { color: #fff; background: var(--ink); }
 .seg button.on-want { background: var(--want); }
 .seg button.on-bought { background: var(--bought); }
 .seg button.on-reading { background: var(--reading); }
+.seg button.on-paused { background: var(--paused); }
 .seg button.on-read { background: var(--read); }
 .seg.small button { min-height: 40px; font-size: 13px; }
 .seg.small button.on { background: var(--accent); }
@@ -232,6 +237,28 @@ textarea {
 }
 .nudge-text { flex: 1 1 100%; }
 .nudge input[type="date"] { height: 40px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+/* 読んだ日（今日読んだボタン＋カレンダー） */
+.days { margin: 20px 0 8px; }
+.days h2 { font-size: 15px; margin: 0 0 6px; }
+.days .row { margin-top: 0; }
+.today-btn { background: transparent; color: var(--reading); border: 1.5px solid currentColor; }
+.today-btn.on { background: var(--reading); color: #fff; border-color: var(--reading); }
+.cal { margin-top: 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px 4px; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cal-head .link-btn { font-size: 22px; min-width: 44px; }
+.cal-head .link-btn:disabled { opacity: 0.3; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-top: 4px; }
+.cal-wd { text-align: center; font-size: 11px; color: var(--muted); }
+.cal-day {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 8px; background: transparent; font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.cal-day.in-session { background: color-mix(in srgb, var(--reading) 16%, transparent); }
+.cal-day.read { background: var(--reading); color: #fff; font-weight: 700; }
+.cal-day.today { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+.cal-day:disabled { color: var(--muted); opacity: 0.35; }
+.cal p { margin: 6px 0 4px; }
+
 .sessions { list-style: none; padding: 0; margin: 20px 0 8px; }
 .sessions h2 { font-size: 15px; margin: 0 0 6px; }
 .session { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }

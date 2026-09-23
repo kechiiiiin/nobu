@@ -1,4 +1,4 @@
-import type { AddResponse, Book, BookDetail, BookNote, Candidate, PatchResponse, ReadingSession, SearchResponse, Status } from "../shared/types.ts";
+import type { AddResponse, Book, BookDetail, BookNote, Candidate, PatchResponse, ReadingDay, ReadingSession, SearchResponse, Status } from "../shared/types.ts";
 
 export class ApiError extends Error {
   constructor(
@@ -59,6 +59,9 @@ export const api = {
   editSession: (id: number, body: { started_on?: string | null; finished_on?: string | null }) =>
     call<{ session: ReadingSession; book: Book }>("PATCH", `/api/sessions/${id}`, body),
   deleteSession: (id: number) => call<{ book: Book }>("DELETE", `/api/sessions/${id}`),
+  /** 読んだ日にする（on を省くと今日）。二度押しても増えない */
+  markDay: (bookId: number, on?: string) => call<{ day: ReadingDay }>("POST", `/api/books/${bookId}/days`, on ? { on } : {}),
+  unmarkDay: (bookId: number, on: string) => call<{ ok: true }>("DELETE", `/api/books/${bookId}/days/${on}`),
   refetch: (id: number) => call<{ book: Book }>("POST", `/api/books/${id}/refetch`),
   remove: (id: number) => call<{ ok: true }>("DELETE", `/api/books/${id}`),
   undo: (eventId: number) => call<{ result: "deleted" | "reverted"; book: Book | null }>("POST", `/api/events/${eventId}/undo`),

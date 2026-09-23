@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api } from "./api.ts";
 import { Cover, errorText, isImeEnter, jstDate, navigate, showToast } from "./ui.tsx";
-import { STATUSES, STATUS_LABEL, type Book, type BookDetail, type BookNote, type ReadingSession, type Status } from "../shared/types.ts";
-import { addDays, daysInclusive, jstToday } from "../shared/dates.ts";
+import { STATUSES, STATUS_LABEL, type Book, type BookDetail, type BookNote, type ReadingDay, type ReadingSession, type Status } from "../shared/types.ts";
+import { addDays, addMonths, daysInclusive, jstToday, monthDays, monthOf, weekday } from "../shared/dates.ts";
 
 /** 「読んでる」「読了」を押した直後に出す、日付の付け替え（既定は今日で記録済み） */
 interface Nudge {
@@ -102,6 +102,8 @@ export function BookPage(props: { id: number }) {
           {STATUS_LABEL[b.status]}：{jstDate(b.status_at)}
         </p>
       )}
+
+      <ReadingDays book={b} days={d.days} sessions={d.sessions} onChanged={load} />
 
       <Sessions book={b} sessions={d.sessions} onChanged={load} />
 
@@ -359,6 +361,100 @@ function EditForm(props: { book: Book; onSaved: (b: Book) => void }) {
         </button>
       </div>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------- 読んだ日
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+/** その日が読書の回（読み始め〜読了。読書中なら今日まで）の中か */
+function inSession(sessions: ReadingSession[], day: string, today: string): boolean {
+  return sessions.some((s) => {
+    const from = s.started_on ?? s.finished_on;
+    const to = s.finished_on ?? today;
+    return Boolean(from) && day >= from! && day <= to;
+  });
+}
+
+/** 「今日読んだ」ボタンと、月のカレンダー（読んだ日を塗る・タップで足す／消す） */
+function ReadingDays(props: { book: Book; days: ReadingDay[]; sessions: ReadingSession[]; onChanged: () => Promise<void> }) {
+  const today = jstToday();
+  const [month, setMonth] = useState(monthOf(today));
+  const [busy, setBusy] = useState(false);
+  const marked = new Set(props.days.map((d) => d.on));
+  const readToday = marked.has(today);
+  const thisMonth = monthDays(month);
+  const countInMonth = thisMonth.filter((d) => marked.has(d)).length;
+
+  async function toggle(day: string) {
+    if (busy || day > today) return;
+    setBusy(true);
+    try {
+      if (marked.has(day)) await api.unmarkDay(props.book.id, day);
+      else await api.markDay(props.book.id, day);
+      await props.onChanged();
+    } catch (e) {
+      showToast({ text: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section class="days">
+      <h2>読んだ日</h2>
+      <div class="row">
+        <button class={`btn today-btn${readToday ? " on" : ""}`} disabled={busy} aria-pressed={readToday} onClick={() => toggle(today)}>
+          {readToday ? "今日読んだ ✓" : "今日読んだ"}
+        </button>
+        <span class="muted small">{readToday ? "もう一度押すと取り消します" : "押すと今日が記録されます"}</span>
+      </div>
+
+      <div class="cal">
+        <div class="cal-head">
+          <button class="link-btn" aria-label="前の月" onClick={() => setMonth(addMonths(month, -1))}>
+            ‹
+          </button>
+          <span>
+            {Number(month.slice(0, 4))}年{Number(month.slice(5, 7))}月
+            <small class="muted"> {countInMonth}日</small>
+          </span>
+          <button class="link-btn" aria-label="次の月" disabled={month >= monthOf(today)} onClick={() => setMonth(addMonths(month, 1))}>
+            ›
+          </button>
+        </div>
+        <div class="cal-grid">
+          {WEEKDAYS.map((w) => (
+            <div class="cal-wd" key={w}>
+              {w}
+            </div>
+          ))}
+          {Array.from({ length: weekday(thisMonth[0]!) }, (_, i) => (
+            <div key={`pad${i}`} />
+          ))}
+          {thisMonth.map((day) => {
+            const cls = ["cal-day"];
+            if (marked.has(day)) cls.push("read");
+            else if (inSession(props.sessions, day, today)) cls.push("in-session");
+            if (day === today) cls.push("today");
+            return (
+              <button
+                key={day}
+                class={cls.join(" ")}
+                disabled={busy || day > today}
+                aria-pressed={marked.has(day)}
+                aria-label={`${day}${marked.has(day) ? "（読んだ日）" : ""}`}
+                onClick={() => toggle(day)}
+              >
+                {Number(day.slice(8))}
+              </button>
+            );
+          })}
+        </div>
+        <p class="muted small">日をタップすると、読んだ日を足したり消したりできます（薄い色は読書の回の期間）。</p>
+      </div>
+    </section>
   );
 }
 
