@@ -25,6 +25,10 @@ import {
   markDay,
   unmarkDay,
   listTimeline,
+  listFeed,
+  getUserByHandle,
+  recordStatus,
+  RECORD_DAYS_MAX,
   TIMELINE_CURSOR,
   TIMELINE_LIMIT_DEFAULT,
   TIMELINE_LIMIT_MAX,
@@ -32,7 +36,8 @@ import {
   type BookEdit,
   type NewBook,
 } from "./books.ts";
-import { isStatus, type AddResponse, type Candidate, type PatchResponse, type ReadingSession, type SearchResponse } from "../shared/types.ts";
+import { isStatus, type AddResponse, type Candidate, type PatchResponse, type ReadingSession, type RecordResponse, type SearchResponse } from "../shared/types.ts";
+import { renderFeed } from "./feed.ts";
 import { isDateOnly, jstToday } from "../shared/dates.ts";
 import { toIsbn13 } from "../shared/isbn.ts";
 
@@ -68,10 +73,35 @@ app.use("*", async (c, next) => {
 // Access 側もこのパスだけ Bypass にしてある。中身は公開して困らない静的ファイルだけ
 const PUBLIC_ASSET = /^\/(icons\/[a-z0-9-]+\.png|manifest\.webmanifest)$/;
 
+// RSS（/u/<handle>/feed.xml）も認証なしで返す。**読む専用で、出すのは is_public = 1 の本だけ**。
+// ⚠️ Cloudflare Access 側の「このパスは認証なし（Bypass）」は別の設定で、Keisuke がダッシュボードで入れる。
+//    Worker 側をこう足しただけでは Access が手前で止めるので、両方揃って初めて外から読める
+const PUBLIC_FEED = /^\/u\/[a-z0-9_-]{1,40}\/feed\.xml$/;
+
 // それ以外は全部 Access の裏。静的ファイルも（run_worker_first）
 app.use("*", async (c, next) => {
-  if (c.req.method === "GET" && PUBLIC_ASSET.test(new URL(c.req.url).pathname)) return next();
+  if (c.req.method === "GET") {
+    const path = new URL(c.req.url).pathname;
+    if (PUBLIC_ASSET.test(path) || PUBLIC_FEED.test(path)) return next();
+  }
   return requireAccess(c, next);
+});
+
+// ---------------------------------------------------------------- RSS（認証なし）
+
+app.get("/u/:handle/feed.xml", async (c) => {
+  const handle = c.req.param("handle");
+  if (!/^[a-z0-9_-]{1,40}$/.test(handle)) return c.text("not found\n", 404);
+  const user = await getUserByHandle(c.env.DB, handle);
+  if (!user) return c.text("not found\n", 404);
+  const body = renderFeed(user, await listFeed(c.env.DB, user.id), new URL(c.req.url).origin);
+  return new Response(body, {
+    headers: {
+      // 文字化けしないよう charset を明示する
+      "Content-Type": "application/rss+xml; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+    },
+  });
 });
 
 // ---------------------------------------------------------------- API
@@ -291,6 +321,32 @@ app.patch("/api/books/:id", async (c) => {
     if (updated) cur = updated;
   }
   return c.json({ book: cur, event_id: eventId, session } satisfies PatchResponse);
+});
+
+/**
+ * 「記録する」。状態と日付をまとめて確定する（押すまで何も保存しない）。
+ * body: { status, days: ['YYYY-MM-DD', ...] }
+ *   - 「読んでる」「読了」は日を複数。いちばん早い日＝読み始めた日、
+ *     「読了」はいちばん遅い日＝読了日。選んだ日はぜんぶ「読んだ日」になる
+ *   - 「気になる」「買った」「保留」は日をひとつだけ
+ */
+app.post("/api/books/:id/record", async (c) => {
+  const id = idParam(c);
+  if (!id) return c.json({ error: "bad_id" }, 400);
+  const book = await getBook(c.env.DB, id);
+  if (!book) return c.json({ error: "not_found" }, 404);
+  const b = await jsonBody(c);
+  if (!isStatus(b.status)) return c.json({ error: "bad_status" }, 400);
+  if (!Array.isArray(b.days) || b.days.length === 0) return c.json({ error: "days_required" }, 400);
+  if (b.days.length > RECORD_DAYS_MAX) return c.json({ error: "too_many_days" }, 400);
+  if (!b.days.every(isDateOnly)) return c.json({ error: "bad_date" }, 400);
+  try {
+    const { event_id } = await recordStatus(c.env.DB, book, b.status, b.days as string[]);
+    return c.json({ detail: (await getDetail(c.env.DB, id))!, event_id } satisfies RecordResponse);
+  } catch (e) {
+    if (e instanceof SessionDateError) return c.json({ error: e.message }, 400);
+    throw e;
+  }
 });
 
 /** 書誌を取り直す（ISBN があるときだけ）。状態・ひとことは触らない */

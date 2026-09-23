@@ -14,6 +14,7 @@ import type {
   TimelineBook,
   TimelineItem,
   TimelineResponse,
+  User,
 } from "../shared/types.ts";
 import { jstToday } from "../shared/dates.ts";
 
@@ -172,21 +173,28 @@ export async function insertBook(
 }
 
 /**
- * 状態の切り替え。同じ状態なら何もしない（event_id = null）。
- * - 「読んでる」: 開いている回が無ければ新しい回（再読もここ）。あればその続き
- * - 「読了」: 開いている回があれば閉じる。無ければ読み始め不明の回を作る
- * on は JST の日付（既定は今日）
+ * イベントの時刻。**選んだ日が今日でなければ、その日の 12:00Z（＝JST 21:00）にする。**
+ * こうしないと、昨日の記録をいま付けたときに「記録」や RSS で今日の出来事として並んでしまう。
  */
-export async function changeStatus(
-  db: D1Database,
-  book: Book,
-  to: Status,
-  via: string,
-  on: string = jstToday(),
-): Promise<{ book: Book; event_id: number | null; session: ReadingSession | null }> {
-  if (book.status === to) return { book, event_id: null, session: null };
+export function eventAt(on: string, now: Date = new Date()): string {
+  return on === jstToday(now) ? now.toISOString() : `${on}T12:00:00.000Z`;
+}
+
+interface StatusPlan {
+  /** 実行する文（最後に syncFinished を足して batch する） */
+  stmts: D1PreparedStatement[];
+  /** stmts の何番目が回を返すか（-1＝無い） */
+  sessionIdx: number;
+  /** sessionIdx が無いときに返す回（「読んでる」で既に開いていた回） */
+  fallback: ReadingSession | null;
+}
+
+/**
+ * 状態の切り替えを「文の並び」に組み立てる（実行はしない）。
+ * 「記録する」（recordStatus）が読んだ日の追加と**同じバッチ**に混ぜられるように切り出してある。
+ */
+async function planStatus(db: D1Database, book: Book, to: Status, via: string, on: string, at: string): Promise<StatusPlan> {
   if (on > jstToday()) throw new SessionDateError("future_date");
-  const at = nowIso();
   const open = to === "reading" || to === "read" ? await openSession(db, book.id) : null;
   if (to === "read" && open?.started_on && open.started_on > on) throw new SessionDateError("finished_before_started");
 
@@ -235,13 +243,97 @@ export async function changeStatus(
         .bind(book.id, on, at),
     );
   }
-  stmts.push(syncFinished(db, book.id));
+  return { stmts, sessionIdx, fallback: to === "reading" ? open : null };
+}
+
+/**
+ * 状態の切り替え。同じ状態なら何もしない（event_id = null）。
+ * - 「読んでる」: 開いている回が無ければ新しい回（再読もここ）。あればその続き
+ * - 「読了」: 開いている回があれば閉じる。無ければ読み始め不明の回を作る
+ * on は JST の日付（既定は今日）
+ */
+export async function changeStatus(
+  db: D1Database,
+  book: Book,
+  to: Status,
+  via: string,
+  on: string = jstToday(),
+): Promise<{ book: Book; event_id: number | null; session: ReadingSession | null }> {
+  if (book.status === to) return { book, event_id: null, session: null };
+  const plan = await planStatus(db, book, to, via, on, eventAt(on));
+  const stmts = [...plan.stmts, syncFinished(db, book.id)];
   const res = await db.batch(stmts);
   const updated = (res[res.length - 1]!.results as Book[])[0]!;
   const eventId = (res[1]!.results as { id: number }[])[0]!.id;
-  const session =
-    sessionIdx >= 0 ? ((res[sessionIdx]!.results as ReadingSession[])[0] ?? null) : to === "reading" ? open : null;
+  const session = plan.sessionIdx >= 0 ? ((res[plan.sessionIdx]!.results as ReadingSession[])[0] ?? null) : plan.fallback;
   return { book: updated, event_id: eventId, session };
+}
+
+/** 「記録する」で一度に選べる日の上限（誤操作で大量に入らないように） */
+export const RECORD_DAYS_MAX = 62;
+
+/**
+ * 「記録する」。状態の切り替えと「読んだ日」を**1回のバッチ**（＝1トランザクション）で確定する。
+ *
+ * 約束ごと（2026-09-23 Keisuke との合意）:
+ *   - 確定するまで何も保存しない。だから途中で失敗して半分だけ残る、が起きないようバッチにしてある
+ *   - 「読んでる」「読了」は日を複数選べる。選んだ日はそのまま読んだ日になり、
+ *     **いちばん早い日＝読み始めた日**（reading_session.started_on）になる
+ *   - 「読了」の読了日はいちばん遅い日。その日も読んだ日として残る
+ *   - 「買った」「気になる」「保留」は日をひとつだけ（読んだ日は作らない）
+ *   - 取り消し（undo）は、この記録で入った読んだ日もまとめて戻す（created_event_id を揃えてある）
+ */
+export async function recordStatus(db: D1Database, book: Book, to: Status, days: string[]): Promise<{ event_id: number | null }> {
+  const sorted = [...new Set(days)].sort();
+  if (sorted.length === 0) throw new SessionDateError("days_required");
+  if (sorted.length > RECORD_DAYS_MAX) throw new SessionDateError("too_many_days");
+  const marksDays = to === "reading" || to === "read";
+  if (!marksDays && sorted.length > 1) throw new SessionDateError("too_many_days");
+  const today = jstToday();
+  for (const d of sorted) if (d > today) throw new SessionDateError("future_date");
+
+  const earliest = sorted[0]!;
+  const latest = sorted[sorted.length - 1]!;
+  // 「読了」は読了日（いちばん遅い日）が出来事の日。それ以外はいちばん早い日
+  const on = to === "read" ? latest : earliest;
+  const at = eventAt(on);
+
+  const stmts: D1PreparedStatement[] = [];
+  let plan: StatusPlan | null = null;
+  if (book.status !== to) {
+    plan = await planStatus(db, book, to, "record", on, at);
+    stmts.push(...plan.stmts);
+  }
+  // 状態が変わらないとき（「今日も読んだ」）は、古いイベントに紐づけない＝取り消しの巻き添えにしない
+  const stamp = plan ? `(SELECT MAX(id) FROM book_event WHERE book_id = ?1)` : "NULL";
+  if (marksDays) {
+    for (const d of sorted) {
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO reading_day (book_id, "on", created_event_id, created_at)
+             VALUES (?1, ?2, ${stamp}, ?3) ON CONFLICT (book_id, "on") DO NOTHING`,
+          )
+          .bind(book.id, d, at),
+      );
+    }
+    // いちばん早い日まで読み始めた日を繰り上げる。
+    // 日がひとつだけのときに「読み始め不明」を埋めてしまわない（本当に1日で読んだとは限らないため）
+    const cond = sorted.length > 1 ? "(started_on IS NULL OR started_on > ?2)" : "(started_on IS NOT NULL AND started_on > ?2)";
+    stmts.push(
+      db
+        .prepare(
+          `UPDATE reading_session SET started_on = ?2, updated_at = ?3
+           WHERE id = (SELECT MAX(id) FROM reading_session WHERE book_id = ?1)
+             AND (finished_on IS NULL OR ?4 = 'read') AND ${cond}`,
+        )
+        .bind(book.id, earliest, at, to),
+    );
+  }
+  if (stmts.length === 0) return { event_id: null };
+  stmts.push(syncFinished(db, book.id));
+  const res = await db.batch(stmts);
+  return { event_id: plan ? (res[1]!.results as { id: number }[])[0]!.id : null };
 }
 
 /**
@@ -357,13 +449,25 @@ export async function listDays(db: D1Database, bookId: number): Promise<ReadingD
   return (await db.prepare(`SELECT * FROM reading_day WHERE book_id = ? ORDER BY "on" DESC`).bind(bookId).all<ReadingDay>()).results;
 }
 
-/** 読んだ日にする。もう入っていればその行を返す（同じ日は1行だけ） */
+/**
+ * 読んだ日にする。もう入っていればその行を返す（同じ日は1行だけ）。
+ * 開いている回（読書中・中断中）より早い日を足したら、**読み始めた日もそこまで繰り上がる**
+ * （「いちばん早い読んだ日＝読み始めた日」という約束・2026-09-23）
+ */
 export async function markDay(db: D1Database, bookId: number, on: string): Promise<ReadingDay> {
   if (on > jstToday()) throw new SessionDateError("future_date");
-  await db
-    .prepare(`INSERT INTO reading_day (book_id, "on", created_event_id, created_at) VALUES (?, ?, NULL, ?) ON CONFLICT (book_id, "on") DO NOTHING`)
-    .bind(bookId, on, nowIso())
-    .run();
+  const at = nowIso();
+  await db.batch([
+    db
+      .prepare(`INSERT INTO reading_day (book_id, "on", created_event_id, created_at) VALUES (?, ?, NULL, ?) ON CONFLICT (book_id, "on") DO NOTHING`)
+      .bind(bookId, on, at),
+    db
+      .prepare(
+        `UPDATE reading_session SET started_on = ?2, updated_at = ?3
+         WHERE book_id = ?1 AND finished_on IS NULL AND started_on IS NOT NULL AND started_on > ?2`,
+      )
+      .bind(bookId, on, at),
+  ]);
   return (await db.prepare(`SELECT * FROM reading_day WHERE book_id = ? AND "on" = ?`).bind(bookId, on).first<ReadingDay>())!;
 }
 
@@ -483,6 +587,132 @@ export async function listTimeline(db: D1Database, before: string | null = null,
   }
   // 次のページは「取れた最後の行」から。省いた行があっても取りこぼさない
   return { items, next: hasMore ? (page[page.length - 1]?.cursor ?? null) : null };
+}
+
+// ---- ユーザーと RSS（/u/:handle/feed.xml）
+//
+// 中身はタイムラインと同じ（状態の変化と読んだ日）。違うのは次の2つだけ:
+//   - そのユーザーの本に絞る
+//   - **is_public = 0 の本は1件も出さない**（載ってから消せないので、載る前に止める）
+
+export async function getUserByHandle(db: D1Database, handle: string): Promise<User | null> {
+  return db.prepare("SELECT * FROM user WHERE handle = ?").bind(handle).first<User>();
+}
+
+/** RSS の1件。状態の変化は本1冊、読んだ日はその日に読んだ本ぜんぶ */
+export interface FeedItem {
+  kind: "status" | "read";
+  /** 並びの鍵（タイムラインと同じ作り） */
+  cursor: string;
+  /** JST の日付 */
+  day: string;
+  /** RSS の pubDate（ISO8601・UTC） */
+  at: string;
+  event_id: number | null;
+  from_status: Status | null;
+  to_status: Status | null;
+  books: { id: number; title: string; author: string | null }[];
+}
+
+export const FEED_LIMIT = 50;
+
+/** 公開しない本を省く条件（状態の変化・読んだ日の両方で同じものを使う） */
+const FEED_VISIBLE = `b.user_id = ?1 AND b.is_public = 1`;
+
+const FEED_SQL = `
+SELECT * FROM (
+  SELECT 'status' AS kind,
+         strftime('%Y-%m-%dT%H:%M:%S', e.at, '+9 hours') || '#e' || printf('%012d', e.id) AS cursor,
+         date(e.at, '+9 hours') AS day,
+         e.id AS event_id, e.at AS at, e.from_status AS from_status, e.to_status AS to_status,
+         b.id AS book_id, b.title AS title, b.author AS author
+  FROM book_event e JOIN book b ON b.id = e.book_id
+  WHERE ${FEED_VISIBLE}
+  UNION ALL
+  SELECT 'read', d."on" || 'T00:00:00#d', d."on", NULL, NULL, NULL, NULL, NULL, NULL, NULL
+  FROM reading_day d JOIN book b ON b.id = d.book_id
+  WHERE ${FEED_VISIBLE}
+    AND NOT EXISTS (SELECT 1 FROM book_event e2 WHERE e2.book_id = d.book_id AND date(e2.at, '+9 hours') = d."on")
+  GROUP BY d."on"
+)
+ORDER BY cursor DESC
+LIMIT ?2`;
+
+/** その日に読んだ本（読んだ日の行に並べる） */
+const feedReadBooksSql = (n: number) => `
+SELECT d."on" AS day, b.id AS id, b.title AS title, b.author AS author
+FROM reading_day d JOIN book b ON b.id = d.book_id
+WHERE ${FEED_VISIBLE} AND d."on" IN (${Array.from({ length: n }, (_, i) => `?${i + 2}`).join(",")})
+  AND NOT EXISTS (SELECT 1 FROM book_event e2 WHERE e2.book_id = d.book_id AND date(e2.at, '+9 hours') = d."on")
+ORDER BY d."on" DESC, d.id ASC`;
+
+interface FeedRow {
+  kind: "status" | "read";
+  cursor: string;
+  day: string;
+  event_id: number | null;
+  at: string | null;
+  from_status: Status | null;
+  to_status: Status | null;
+  book_id: number | null;
+  title: string | null;
+  author: string | null;
+}
+
+/**
+ * 新しい順に limit 件。
+ *
+ * pubDate（at）の決め方:
+ *   - 状態の変化はイベントの時刻そのまま。**過去の日で「記録する」と 12:00Z が入っている**（eventAt）ので、
+ *     「昨日ぶんをいま記録した」ものが RSS 上で今日の出来事に見えることはない
+ *   - 読んだ日はその日の 12:00Z（JST 21:00）。時刻を持たないので、並び（day）と食い違わない値にする
+ */
+export async function listFeed(db: D1Database, userId: number, limit = FEED_LIMIT): Promise<FeedItem[]> {
+  const rows = (await db.prepare(FEED_SQL).bind(userId, limit).all<FeedRow>()).results;
+  const days = rows.filter((r) => r.kind === "read").map((r) => r.day);
+  const byDay = new Map<string, FeedItem["books"]>();
+  if (days.length > 0) {
+    const read = (
+      await db
+        .prepare(feedReadBooksSql(days.length))
+        .bind(userId, ...days)
+        .all<{ day: string; id: number; title: string; author: string | null }>()
+    ).results;
+    for (const r of read) {
+      const list = byDay.get(r.day) ?? [];
+      list.push({ id: r.id, title: r.title, author: r.author });
+      byDay.set(r.day, list);
+    }
+  }
+  const out: FeedItem[] = [];
+  for (const r of rows) {
+    if (r.kind === "read") {
+      const books = byDay.get(r.day) ?? [];
+      if (books.length === 0) continue;
+      out.push({
+        kind: "read",
+        cursor: r.cursor,
+        day: r.day,
+        at: `${r.day}T12:00:00.000Z`,
+        event_id: null,
+        from_status: null,
+        to_status: null,
+        books,
+      });
+      continue;
+    }
+    out.push({
+      kind: "status",
+      cursor: r.cursor,
+      day: r.day,
+      at: r.at ?? `${r.day}T12:00:00.000Z`,
+      event_id: r.event_id,
+      from_status: r.from_status,
+      to_status: r.to_status,
+      books: [{ id: r.book_id!, title: r.title!, author: r.author }],
+    });
+  }
+  return out;
 }
 
 // finished_at は読書の回から同期するので、ここでは直させない

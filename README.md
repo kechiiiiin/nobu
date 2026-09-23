@@ -23,7 +23,7 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | 数文字で候補 → 1タップ登録 | 2文字以上で自動検索（Enter 不要）。候補の「気になる／買った／読んでる」で登録。5秒の「取り消す」付き |
 | バーコードで即「買った」 | `barcode-detector`（ZXing の wasm・自前配信）。978/979 始まりで検算が通る EAN-13 を**連続2回**読んだら確定。2段目（192…）は黙って無視。同じ本は10秒無視。登録後もカメラは止めない。既に「気になる」の本は「買った」へ進める |
 | 本のページで状態ワンタップ＋ひとこと | 5択のセグメント。「読了」でひとこと欄が開く。ひとことの Enter は改行・保存はボタン（⌘/Ctrl+Enter も可。IME の変換確定は除外） |
-| 読み始めた日・読了日（再読も何回分でも） | 「読んでる」「読了」を押すと今日の日付で記録し、直後に「昨日にする／日付を選ぶ／取り消す」を8秒出す。本のページの「読書の記録」に回ごとに `2026-09-10 〜 2026-09-23（14日）`／`〜（読書中・n日目）` と並び、各回は直す・消す・前の読書を足すができる。本棚の書影の下に読み始めた日／最新の読了日 |
+| 読み始めた日・読了日（再読も何回分でも） | ネイティブアプリ（nobu-ios）は**選ぶ → 日を決める → 「記録する」**の三手（押すまで何も保存しない）。Web 版は「読んでる」「読了」を押すと今日の日付で記録し、直後に「昨日にする／日付を選ぶ／取り消す」を8秒出す。本のページの「読書の記録」に回ごとに `2026-09-10 〜 2026-09-23（14日）`／`〜（読書中・n日目）` と並び、各回は直す・消す・前の読書を足すができる。本棚の書影の下に読み始めた日／最新の読了日 |
 | 読んだ日（日ごと） | 本のページの「今日読んだ」を押すと今日が入る（もう一度押すと取り消す）。過去の日は月のカレンダーをタップして足す・消す。読んだ日は塗り、回の期間は薄い下地、今日は枠。未来の日は押せない |
 | ホーム画面から開く | `manifest.webmanifest`＋アイコン（`display: standalone`） |
 
@@ -34,7 +34,8 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | `src/index.ts` | ルーティング（API・静的ファイル。静的ファイルも `run_worker_first` で認証を通す） |
 | `src/auth.ts` | Access JWT の検証（JWKS・iss・aud・exp・メール allowlist・fail-closed）とローカル迂回の三重ガード |
 | `src/lookup.ts` | 楽天／NDL／openBD／版元ドットコム |
-| `src/books.ts` | D1 の読み書き（登録・状態・取り消し・ひとこと） |
+| `src/books.ts` | D1 の読み書き（登録・状態・記録する・取り消し・ひとこと・タイムライン・RSS のもと） |
+| `src/feed.ts` | RSS 2.0 の組み立て（`/u/:handle/feed.xml`） |
 | `shared/` | ISBN の検算・スキャン確定の判定（`ScanGate`）・型（Worker と画面で共有） |
 | `web/` | 画面（Preact）。`scripts/build-web.mjs` で `public/build/` へ（ZXing の wasm もここにコピー） |
 | `migrations/` | D1 のスキーマ |
@@ -53,10 +54,20 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | `POST /api/books/:id/sessions`・`PATCH/DELETE /api/sessions/:id` | 読書の回（`started_on`／`finished_on` は JST の `YYYY-MM-DD`、null＝不明／読書中）。`PATCH /api/books/:id` の `status` には `on`（日付・既定は今日）を添えられる |
 | `GET/POST /api/books/:id/days`・`DELETE /api/books/:id/days/:on` | 読んだ日（`on` は JST の `YYYY-MM-DD`。POST で省くと今日。同じ日を二度押しても増えない） |
 | `GET /api/timeline?before=&limit=` | タイムライン（アプリの「記録」タブ）。状態の変化（`book_event`）と読んだ日（`reading_day`）を **D1 の中で併合**して新しい順に。`before` は前のページの `next` をそのまま渡す、`limit` は 1〜100・既定 50。`items[]` は `kind: "status"`（1件ずつ）と `kind: "read"`（その日に読んだ本をまとめて1件）。**同じ本・同じ日に状態の変化があるときは、その本をその日の `read` から省く**（「読み始めた」「読了」は読んだ日を自動で作るので、素直に併合すると必ず二重になるため） |
-| `POST /api/events/:id/undo` | 取り消し（登録イベントなら本ごと消す／状態変更なら戻す。最新のイベントだけ） |
+| `POST /api/books/:id/record` | **「記録する」**。`{ status, days: ['YYYY-MM-DD', ...] }` を**1回のバッチ（＝1トランザクション）**で確定する。「読んでる」「読了」は日を複数選べて、選んだ日はぜんぶ読んだ日になり、**いちばん早い日＝読み始めた日**・「読了」は**いちばん遅い日＝読了日**。「気になる／買った／保留」は日をひとつだけ（読んだ日は作らない）。選んだ日が今日でなければイベントの時刻も**その日の 12:00Z** にするので、記録タブ・RSS でもその日に並ぶ |
+| `POST /api/events/:id/undo` | 取り消し（登録イベントなら本ごと消す／状態変更なら戻す。最新のイベントだけ）。「記録する」で入った読んだ日もまとめて戻る |
 | `POST /api/books/:id/notes`・`PATCH/DELETE /api/notes/:id` | ひとこと |
+| `GET /u/:handle/feed.xml` | **RSS 2.0（認証なし）**。中身はタイムラインと同じ（状態の変化・読んだ日）。⚠️ **`book.is_public = 0` の本は1件も出さない** |
 
-`/icons/*.png` と `/manifest.webmanifest` だけは認証なし（Access も Bypass）。iOS がホーム画面追加のときクッキー無しで取りに来ることがあるため。
+`/icons/*.png`・`/manifest.webmanifest`・`/u/<handle>/feed.xml` だけは認証なし（Access も Bypass）。前者は iOS がホーム画面追加のときクッキー無しで取りに来ることがあるため、RSS は外の読み手に読ませるため。
+
+### RSS について
+
+- **RSS 2.0 を選んだ**のは、リーダーの対応がいちばん広く、必要な要素（`title`／`link`／`pubDate`／`guid`／`description`）がそのまま RSS 2.0 の語彙だから。self リンクだけ Atom の名前空間を借りる（RSS 2.0 の慣例）
+- `guid` は `nobu:event:<id>`（状態の変化）と `nobu:read:<handle>:<日付>`（読んだ日）。**読んだ日は1日1件**なので、あとから同じ日に本が増えても二重には出ない
+- `link` は NoBu の入口。本のページは Access の裏なので外からは開けない（公開用の本のページはまだ作っていない）
+- **非公開は「載る前に止める」**。RSS は一度読まれたら取り消せないので、`is_public` の絞り込みはクエリの段（`src/books.ts` の `listFeed`）で効かせている
+- ⚠️ Cloudflare Access 側の Bypass 設定は Worker とは別（ダッシュボード）。両方揃って初めて外から読める
 
 ## 楽天ブックス API
 

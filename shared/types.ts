@@ -35,8 +35,18 @@ export interface Candidate {
   owned?: { id: number; status: Status } | null;
 }
 
+/** いまは1人だけ（他人が使える仕組みはまだ無い）。handle は RSS の URL に出る */
+export interface User {
+  id: number;
+  handle: string;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Book {
   id: number;
+  user_id: number;
   isbn13: string | null;
   title: string;
   author: string | null;
@@ -118,6 +128,16 @@ export interface PatchResponse {
   book: Book;
   event_id: number | null;
   session: ReadingSession | null;
+}
+
+/**
+ * POST /api/books/:id/record の結果。
+ * 「記録する」は状態の切り替えと読んだ日を**1回のバッチ**で確定する（途中で止まらない）
+ */
+export interface RecordResponse {
+  detail: BookDetail;
+  /** 取り消し用。状態が変わらなかった（読んだ日だけ足した）ときは null */
+  event_id: number | null;
 }
 
 export interface BookDetail {
