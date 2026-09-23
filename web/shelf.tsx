@@ -3,7 +3,8 @@ import { api } from "./api.ts";
 import { Cover, Link, errorText, jstDate, navigate, useLocation } from "./ui.tsx";
 import { STATUS_LABEL, isStatus, type Book, type Status } from "../shared/types.ts";
 
-const TABS: Status[] = ["reading", "paused", "bought", "want", "read"];
+// 保留はいちばん右（めったに見ないので端へ・2026-09-23 Keisuke）
+const TABS: Status[] = ["reading", "bought", "want", "read", "paused"];
 
 export function ShelfPage() {
   const { query } = useLocation();
