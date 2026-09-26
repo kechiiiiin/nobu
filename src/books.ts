@@ -611,7 +611,17 @@ export interface FeedItem {
   event_id: number | null;
   from_status: Status | null;
   to_status: Status | null;
-  books: { id: number; title: string; author: string | null }[];
+  books: FeedBook[];
+}
+
+/** フィードに並ぶ本1冊。isbn13・書影は feed.json（ブログのトップ）で使う。RSS は題名と著者だけ */
+export interface FeedBook {
+  id: number;
+  title: string;
+  author: string | null;
+  isbn13: string | null;
+  cover_url: string | null;
+  cover_kind: CoverKind;
 }
 
 export const FEED_LIMIT = 50;
@@ -625,11 +635,12 @@ SELECT * FROM (
          strftime('%Y-%m-%dT%H:%M:%S', e.at, '+9 hours') || '#e' || printf('%012d', e.id) AS cursor,
          date(e.at, '+9 hours') AS day,
          e.id AS event_id, e.at AS at, e.from_status AS from_status, e.to_status AS to_status,
-         b.id AS book_id, b.title AS title, b.author AS author
+         b.id AS book_id, b.title AS title, b.author AS author,
+         b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
   FROM book_event e JOIN book b ON b.id = e.book_id
   WHERE ${FEED_VISIBLE}
   UNION ALL
-  SELECT 'read', d."on" || 'T00:00:00#d', d."on", NULL, NULL, NULL, NULL, NULL, NULL, NULL
+  SELECT 'read', d."on" || 'T00:00:00#d', d."on", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
   FROM reading_day d JOIN book b ON b.id = d.book_id
   WHERE ${FEED_VISIBLE}
     AND NOT EXISTS (SELECT 1 FROM book_event e2 WHERE e2.book_id = d.book_id AND date(e2.at, '+9 hours') = d."on")
@@ -640,7 +651,8 @@ LIMIT ?2`;
 
 /** その日に読んだ本（読んだ日の行に並べる） */
 const feedReadBooksSql = (n: number) => `
-SELECT d."on" AS day, b.id AS id, b.title AS title, b.author AS author
+SELECT d."on" AS day, b.id AS id, b.title AS title, b.author AS author,
+       b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
 FROM reading_day d JOIN book b ON b.id = d.book_id
 WHERE ${FEED_VISIBLE} AND d."on" IN (${Array.from({ length: n }, (_, i) => `?${i + 2}`).join(",")})
   AND NOT EXISTS (SELECT 1 FROM book_event e2 WHERE e2.book_id = d.book_id AND date(e2.at, '+9 hours') = d."on")
@@ -657,6 +669,9 @@ interface FeedRow {
   book_id: number | null;
   title: string | null;
   author: string | null;
+  isbn13: string | null;
+  cover_url: string | null;
+  cover_kind: CoverKind | null;
 }
 
 /**
@@ -676,11 +691,11 @@ export async function listFeed(db: D1Database, userId: number, limit = FEED_LIMI
       await db
         .prepare(feedReadBooksSql(days.length))
         .bind(userId, ...days)
-        .all<{ day: string; id: number; title: string; author: string | null }>()
+        .all<FeedBook & { day: string }>()
     ).results;
     for (const r of read) {
       const list = byDay.get(r.day) ?? [];
-      list.push({ id: r.id, title: r.title, author: r.author });
+      list.push({ id: r.id, title: r.title, author: r.author, isbn13: r.isbn13, cover_url: r.cover_url, cover_kind: r.cover_kind });
       byDay.set(r.day, list);
     }
   }
@@ -709,7 +724,9 @@ export async function listFeed(db: D1Database, userId: number, limit = FEED_LIMI
       event_id: r.event_id,
       from_status: r.from_status,
       to_status: r.to_status,
-      books: [{ id: r.book_id!, title: r.title!, author: r.author }],
+      books: [
+        { id: r.book_id!, title: r.title!, author: r.author, isbn13: r.isbn13, cover_url: r.cover_url, cover_kind: r.cover_kind ?? "none" },
+      ],
     });
   }
   return out;

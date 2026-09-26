@@ -1,4 +1,4 @@
-// RSS（/u/:handle/feed.xml）の組み立て。
+// RSS（/u/:handle/feed.xml）と JSON（/u/:handle/feed.json）の組み立て。
 //
 // なぜ RSS 2.0 で Atom ではないか:
 //   読み手のリーダーの対応がいちばん広く、Keisuke が求めた要素（title / link / pubDate / guid / description）が
@@ -8,7 +8,7 @@
 //    RSS は一度読まれたら取り消せないので、「載ってから消す」ではなく「載る前に止める」。
 
 import type { FeedItem } from "./books.ts";
-import { eventLabel, type User } from "../shared/types.ts";
+import { eventLabel, type CoverKind, type Status, type User } from "../shared/types.ts";
 
 /** XML のテキストに出してよい形へ。制御文字は落とす（XML 1.0 で禁じられている） */
 export function xmlEscape(s: string): string {
@@ -84,4 +84,69 @@ export function renderFeed(user: User, items: FeedItem[], origin: string, now: D
   }
   lines.push("</channel>", "</rss>", "");
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------- JSON（/u/:handle/feed.json）
+//
+// ブログ（kechiiiiin.com）のトップ「いま」の BOOK 行が読む。中身は RSS と同じ listFeed（is_public = 1 の本だけ）に、
+// 出来事のラベル・ISBN・書影を足したもの。
+
+/** 書影として受ける URL（CSP の img-src と揃える）。楽天・版元ドットコムの外部画像だけ */
+export const COVER_URL_OK = /^https:\/\/(thumbnail\.image\.rakuten\.co\.jp|img\.hanmoto\.com)\//;
+
+/**
+ * 外から見える書影だけを返す。それ以外は null。
+ * 楽天・版元ドットコムは外部の画像なので誰でも開ける。`photo`・`manual` は NoBu 自身が配る画像になる想定で、
+ * NoBu は Access の裏なので外からは開けない——載せると壊れた画像になるので出さない（2026-09-26 実査）
+ */
+export function publicCoverUrl(kind: CoverKind | null, url: string | null): string | null {
+  if (!url || (kind !== "rakuten" && kind !== "hanmoto")) return null;
+  return COVER_URL_OK.test(url) ? url : null;
+}
+
+/** 1件の出来事のラベル。日々の「読んだ」は「読んだ」、状態の変化は eventLabel（読了・読み始めた・買った・保留にした…） */
+export function itemLabel(item: FeedItem): string {
+  return item.kind === "read" ? "読んだ" : eventLabel(item.from_status, item.to_status!);
+}
+
+export interface FeedJsonBook {
+  title: string;
+  author: string | null;
+  isbn13: string | null;
+  cover_url: string | null;
+  cover_kind: CoverKind;
+}
+
+export interface FeedJsonItem {
+  kind: "status" | "read";
+  label: string;
+  /** 状態の変化の行き先（読んだ日は null）。保留（paused）を除くのに使う */
+  to_status: Status | null;
+  /** JST の日付 */
+  day: string;
+  /** ISO8601・UTC（RSS の pubDate と同じ値） */
+  at: string;
+  books: FeedJsonBook[];
+}
+
+export interface FeedJson {
+  handle: string;
+  items: FeedJsonItem[];
+}
+
+export function renderFeedJson(user: User, items: FeedItem[]): FeedJson {
+  return {
+    handle: user.handle,
+    items: items.map((item) => ({
+      kind: item.kind,
+      label: itemLabel(item),
+      to_status: item.to_status,
+      day: item.day,
+      at: item.at,
+      books: item.books.map((b) => {
+        const cover_url = publicCoverUrl(b.cover_kind, b.cover_url);
+        return { title: b.title, author: b.author, isbn13: b.isbn13, cover_url, cover_kind: cover_url ? b.cover_kind : "none" };
+      }),
+    })),
+  };
 }

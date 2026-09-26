@@ -37,7 +37,7 @@ import {
   type NewBook,
 } from "./books.ts";
 import { isStatus, type AddResponse, type Candidate, type PatchResponse, type ReadingSession, type RecordResponse, type SearchResponse } from "../shared/types.ts";
-import { renderFeed } from "./feed.ts";
+import { COVER_URL_OK, renderFeed, renderFeedJson } from "./feed.ts";
 import { isDateOnly, jstToday } from "../shared/dates.ts";
 import { toIsbn13 } from "../shared/isbn.ts";
 
@@ -58,9 +58,6 @@ const CSP = [
   "object-src 'none'",
 ].join("; ");
 
-/** 書影として受ける URL（CSP の img-src と揃える） */
-const COVER_URL_OK = /^https:\/\/(thumbnail\.image\.rakuten\.co\.jp|img\.hanmoto\.com)\//;
-
 const app = new Hono<AppEnv>();
 
 app.use("*", async (c, next) => {
@@ -73,10 +70,11 @@ app.use("*", async (c, next) => {
 // Access 側もこのパスだけ Bypass にしてある。中身は公開して困らない静的ファイルだけ
 const PUBLIC_ASSET = /^\/(icons\/[a-z0-9-]+\.png|manifest\.webmanifest)$/;
 
-// RSS（/u/<handle>/feed.xml）も認証なしで返す。**読む専用で、出すのは is_public = 1 の本だけ**。
+// RSS（/u/<handle>/feed.xml）と同じ中身の JSON（/u/<handle>/feed.json・ブログのトップが読む）も認証なしで返す。
+// **読む専用で、出すのは is_public = 1 の本だけ**。/u/ の下でもこの2本以外（と /api/* など）は今までどおり Access の裏。
 // ⚠️ Cloudflare Access 側の「このパスは認証なし（Bypass）」は別の設定で、Keisuke がダッシュボードで入れる。
 //    Worker 側をこう足しただけでは Access が手前で止めるので、両方揃って初めて外から読める
-const PUBLIC_FEED = /^\/u\/[a-z0-9_-]{1,40}\/feed\.xml$/;
+export const PUBLIC_FEED = /^\/u\/[a-z0-9_-]{1,40}\/feed\.(xml|json)$/;
 
 // それ以外は全部 Access の裏。静的ファイルも（run_worker_first）
 app.use("*", async (c, next) => {
@@ -99,6 +97,19 @@ app.get("/u/:handle/feed.xml", async (c) => {
     headers: {
       // 文字化けしないよう charset を明示する
       "Content-Type": "application/rss+xml; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+    },
+  });
+});
+
+app.get("/u/:handle/feed.json", async (c) => {
+  const handle = c.req.param("handle");
+  if (!/^[a-z0-9_-]{1,40}$/.test(handle)) return c.json({ error: "not found" }, 404);
+  const user = await getUserByHandle(c.env.DB, handle);
+  if (!user) return c.json({ error: "not found" }, 404);
+  return new Response(JSON.stringify(renderFeedJson(user, await listFeed(c.env.DB, user.id))), {
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "public, max-age=300",
     },
   });
