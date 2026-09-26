@@ -763,7 +763,8 @@ SELECT * FROM (
            (SELECT max(date(e.at, '+9 hours')) FROM book_event e WHERE e.book_id = b.id AND e.to_status = 'reading')
          ) END AS started_on,
          (SELECT max(d."on") FROM reading_day d WHERE d.book_id = b.id) AS last_read_on,
-         b.finished_at AS finished_on,
+         -- 古いデータには ISO8601（UTC の時刻つき）の finished_at が残っているので JST の日付にそろえる
+         CASE WHEN length(b.finished_at) > 10 THEN date(b.finished_at, '+9 hours') ELSE b.finished_at END AS finished_on,
          (SELECT max(date(e.at, '+9 hours')) FROM book_event e WHERE e.book_id = b.id AND e.to_status = 'bought') AS bought_on
   FROM book b
   WHERE ${FEED_VISIBLE} AND b.status IN ('reading', 'read', 'bought')

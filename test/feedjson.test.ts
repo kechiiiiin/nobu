@@ -190,3 +190,13 @@ test("feed.json: ルートの応答に shelf が入る", async () => {
   assert.ok(Array.isArray(body.shelf));
   assert.equal(body.shelf[0]!.title, "おおやけ");
 });
+
+test("feed.json の shelf: 古い ISO8601 の finished_at も JST の日付で出す", async () => {
+  const { db, user } = await seed();
+  const b = (await listShelf(db, user.id, "2026-09-26"))[0]!;
+  // seed の本の finished_at を古い形に書き換える
+  await db.prepare("UPDATE book SET finished_at = '2026-08-31T15:30:00.000Z' WHERE title = 'おおやけ'").run();
+  const after = (await listShelf(db, user.id, "2026-09-26")).find((x) => x.title === "おおやけ")!;
+  assert.equal(b.finished_on, "2026-09-13");
+  assert.equal(after.finished_on, "2026-09-01", "UTC 15:30 は JST の翌日");
+});
