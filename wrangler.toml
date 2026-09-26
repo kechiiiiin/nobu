@@ -3,8 +3,11 @@ main = "src/index.ts"
 # wrangler 4.131.2 同梱の workerd が対応する日付（これより新しいとローカルが起動しない）
 compatibility_date = "2026-08-22"
 
-# workers.dev の素のホスト名を生やさない。公開口は Access で守った Custom Domain だけ。
-workers_dev = false
+# workers.dev（nobu.kechiiiiin.workers.dev）は**フィード（feed.xml / feed.json）を読む専用**で開ける。
+# ブログのビルドが Custom Domain からだとボット対策で 403 になるため（2026-09-26・Keisuke 判断）。
+# Access は掛からないので、フィード以外は Worker 側で 404 にしている（src/index.ts の FEED_ONLY_HOST）。
+# 画面・API の公開口は今までどおり Access で守った Custom Domain だけ。
+workers_dev = true
 preview_urls = false
 
 [[routes]]
