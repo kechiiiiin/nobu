@@ -77,6 +77,21 @@ const PUBLIC_ASSET = /^\/(icons\/[a-z0-9-]+\.png|manifest\.webmanifest)$/;
 //    Worker 側をこう足しただけでは Access が手前で止めるので、両方揃って初めて外から読める
 export const PUBLIC_FEED = /^\/u\/[a-z0-9_-]{1,40}\/feed\.(xml|json)$/;
 
+// workers.dev（nobu.kechiiiiin.workers.dev）は**フィードを読む専用の裏口**。
+// ブログのビルド（GitHub Actions）が nobu.kechiiiiin.com から Cloudflare のボット対策で 403 を食うため、
+// ゾーン設定の掛からない workers.dev から feed.json を読ませる（2026-09-26・Keisuke 判断）。
+// workers.dev には Access が掛からないので、ここでは GET のフィード2本以外を全部 404 にする
+// （requireAccess も JWT 無しで通さないが、それに頼らずホストで先に閉じる）。
+export const FEED_ONLY_HOST = /\.workers\.dev$/;
+
+app.use("*", async (c, next) => {
+  const url = new URL(c.req.url);
+  if (FEED_ONLY_HOST.test(url.hostname) && !(c.req.method === "GET" && PUBLIC_FEED.test(url.pathname))) {
+    return c.text("not found\n", 404);
+  }
+  return next();
+});
+
 // それ以外は全部 Access の裏。静的ファイルも（run_worker_first）
 app.use("*", async (c, next) => {
   if (c.req.method === "GET") {

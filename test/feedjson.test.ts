@@ -200,3 +200,18 @@ test("feed.json の shelf: 古い ISO8601 の finished_at も JST の日付で�
   assert.equal(b.finished_on, "2026-09-13");
   assert.equal(after.finished_on, "2026-09-01", "UTC 15:30 は JST の翌日");
 });
+
+test("workers.dev: フィード2本の GET だけ通し、ほかは全部 404", async () => {
+  const { db } = await seed();
+  const env = { DB: db } as never;
+  const W = "https://nobu.kechiiiiin.workers.dev";
+  assert.equal((await app.request(`${W}/u/kechiiiiin/feed.json`, {}, env)).status, 200);
+  assert.equal((await app.request(`${W}/u/kechiiiiin/feed.xml`, {}, env)).status, 200);
+  for (const p of ["/", "/api/books", "/api/timeline", "/api/me", "/u/kechiiiiin/", "/icons/icon-192.png", "/manifest.webmanifest", "/build/app.js"]) {
+    assert.equal((await app.request(`${W}${p}`, {}, env)).status, 404, p);
+  }
+  assert.equal((await app.request(`${W}/u/kechiiiiin/feed.json`, { method: "POST" }, env)).status, 404);
+  assert.equal((await app.request(`${W}/api/books`, { method: "POST", body: "{}" }, env)).status, 404);
+  // 素のホスト（custom domain）では今までどおり（フィードは 200）
+  assert.equal((await app.request("https://nobu.kechiiiiin.com/u/kechiiiiin/feed.json", {}, env)).status, 200);
+});
