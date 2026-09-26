@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeDb } from "./d1shim.ts";
-import { editBook, getBook, getUserByHandle, insertBook, listFeed, markDay, recordStatus, type NewBook } from "../src/books.ts";
+import { editBook, getBook, getUserByHandle, insertBook, listFeed, listShelf, markDay, recordStatus, type NewBook } from "../src/books.ts";
+import { jstToday } from "../shared/dates.ts";
 import { itemLabel, publicCoverUrl, renderFeedJson, type FeedJson } from "../src/feed.ts";
 import app, { PUBLIC_FEED } from "../src/index.ts";
 
@@ -127,4 +128,65 @@ test("feed.json: ルート（ヘッダーと中身・知らない handle は 404
     const r = await app.request(p, {}, env);
     assert.ok(r.status === 401 || r.status === 403, `${p} → ${r.status}`);
   }
+});
+
+// ---- shelf（本ごとの現在の状態。ブログのトップ「本」の3区分に使う）
+
+test("feed.json の shelf: 非公開・気になる・保留の本は出さず、状態と日付を出す", async () => {
+  const { db, user } = await seed();
+  const reading = await insertBook(db, nb("よんでる", { isbn13: "9784000000003" }), "bought", "search");
+  await recordStatus(db, reading.book, "reading", ["2026-09-20", "2026-09-22"]);
+  const want = await insertBook(db, nb("きになる"), "want", "search");
+  const paused = await insertBook(db, nb("ほりゅう"), "bought", "search");
+  await recordStatus(db, paused.book, "reading", ["2026-09-21"]);
+  await recordStatus(db, (await getBook(db, paused.book.id))!, "paused", ["2026-09-22"]);
+  const secretReading = await insertBook(db, nb("ないしょ中"), "bought", "search");
+  await editBook(db, secretReading.book.id, { is_public: 0 });
+  await recordStatus(db, (await getBook(db, secretReading.book.id))!, "reading", ["2026-09-22"]);
+  assert.ok(want);
+
+  const json = renderFeedJson(user, await listFeed(db, user.id), await listShelf(db, user.id, "2026-09-26"));
+  const titles = json.shelf.map((b) => b.title).sort();
+  assert.deepEqual(titles, ["おおやけ", "よんでる"]);
+  assert.ok(!JSON.stringify(json.shelf).includes("ないしょ"));
+
+  const r = json.shelf.find((b) => b.title === "よんでる")!;
+  assert.equal(r.status, "reading");
+  assert.equal(r.started_on, "2026-09-20");
+  assert.equal(r.last_read_on, "2026-09-22");
+  assert.equal(r.finished_on, null);
+  assert.equal(r.bought_on, jstToday());
+
+  const done = json.shelf.find((b) => b.title === "おおやけ")!;
+  assert.deepEqual(done, {
+    title: "おおやけ",
+    author: "著者A",
+    isbn13: "9784000000001",
+    cover_url: RAKUTEN,
+    cover_kind: "rakuten",
+    status: "read",
+    started_on: null,
+    last_read_on: "2026-09-13",
+    finished_on: "2026-09-13",
+    bought_on: jstToday(),
+  });
+  assert.ok(!("id" in done));
+});
+
+test("feed.json の shelf: 直近31日に何も無い本は出さない（本棚まるごとは出さない）", async () => {
+  const { db, user } = await seed();
+  // seed の本は「買った」が今日。ずっと先の日を今日とみなせば窓から外れる
+  assert.equal((await listShelf(db, user.id, "2099-01-01")).length, 0);
+  // 窓の端: 最後の動きが「今日」の本は、今日から数えて31日目まで入り、32日目で外れる
+  const d = (n: number) => new Date(Date.parse(`${jstToday()}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  assert.equal((await listShelf(db, user.id, d(30))).length, 1);
+  assert.equal((await listShelf(db, user.id, d(31))).length, 0);
+});
+
+test("feed.json: ルートの応答に shelf が入る", async () => {
+  const { db } = await seed();
+  const res = await app.request("/u/kechiiiiin/feed.json", {}, { DB: db } as never);
+  const body = (await res.json()) as FeedJson;
+  assert.ok(Array.isArray(body.shelf));
+  assert.equal(body.shelf[0]!.title, "おおやけ");
 });

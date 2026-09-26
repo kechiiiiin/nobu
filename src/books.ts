@@ -732,6 +732,51 @@ export async function listFeed(db: D1Database, userId: number, limit = FEED_LIMI
   return out;
 }
 
+// ---- 本棚のいま（feed.json の shelf）。ブログのトップ「本」（読んでいる／最近読み終えた／最近買った）が読む
+//
+// 出来事の流れ（items）だけでは「いま読書中か」が分からないので、本ごとの現在の状態と日付を足す。
+// 条件は RSS と同じ FEED_VISIBLE（is_public = 1 の本だけ）。出すのは「読んでる・読了・買った」の本で、
+// 直近 SHELF_DAYS 日に何か（読み始め・読んだ日・読了・買った）があったものだけ——本棚まるごとは出さない。
+// 区分けと「1週間」の窓はブログ側（ビルドした日が基準）で決める。
+
+/** shelf に載せる期間（日）。ブログの窓（7日）より長めに取り、ビルドの遅れやタイムゾーンの端を吸収する */
+export const SHELF_DAYS = 31;
+
+export interface ShelfBook extends FeedBook {
+  status: Status;
+  /** 読書中の回の読み始めた日（JST 'YYYY-MM-DD'）。読み始めた日が不明なら、読書中にした出来事の日 */
+  started_on: string | null;
+  /** 最後に「読んだ日」 */
+  last_read_on: string | null;
+  /** 最新の読了日 */
+  finished_on: string | null;
+  /** 最後に「買った」にした日 */
+  bought_on: string | null;
+}
+
+const SHELF_SQL = `
+SELECT * FROM (
+  SELECT b.id AS id, b.title AS title, b.author AS author, b.isbn13 AS isbn13,
+         b.cover_url AS cover_url, b.cover_kind AS cover_kind, b.status AS status,
+         CASE WHEN b.status = 'reading' THEN coalesce(
+           (SELECT s.started_on FROM reading_session s WHERE s.book_id = b.id AND s.finished_on IS NULL ORDER BY s.id DESC LIMIT 1),
+           (SELECT max(date(e.at, '+9 hours')) FROM book_event e WHERE e.book_id = b.id AND e.to_status = 'reading')
+         ) END AS started_on,
+         (SELECT max(d."on") FROM reading_day d WHERE d.book_id = b.id) AS last_read_on,
+         b.finished_at AS finished_on,
+         (SELECT max(date(e.at, '+9 hours')) FROM book_event e WHERE e.book_id = b.id AND e.to_status = 'bought') AS bought_on
+  FROM book b
+  WHERE ${FEED_VISIBLE} AND b.status IN ('reading', 'read', 'bought')
+)
+WHERE max(coalesce(started_on, ''), coalesce(last_read_on, ''), coalesce(finished_on, ''), coalesce(bought_on, '')) >= ?2
+ORDER BY id DESC`;
+
+/** today は JST の 'YYYY-MM-DD'（テストで差し替える） */
+export async function listShelf(db: D1Database, userId: number, today: string = jstToday(), days = SHELF_DAYS): Promise<ShelfBook[]> {
+  const since = new Date(Date.parse(`${today}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  return (await db.prepare(SHELF_SQL).bind(userId, since).all<ShelfBook>()).results;
+}
+
 // finished_at は読書の回から同期するので、ここでは直させない
 const EDITABLE = ["title", "author", "publisher", "pubdate", "cover_url", "isbn13", "is_public"] as const;
 export type BookEdit = Partial<Record<(typeof EDITABLE)[number], string | number | null>> & { cover_kind?: CoverKind; meta_source?: MetaSource };

@@ -7,7 +7,7 @@
 // ⚠️ ここに出すのは `is_public = 1` の本だけ（絞り込みは listFeed 側）。
 //    RSS は一度読まれたら取り消せないので、「載ってから消す」ではなく「載る前に止める」。
 
-import type { FeedItem } from "./books.ts";
+import type { FeedItem, ShelfBook } from "./books.ts";
 import { eventLabel, type CoverKind, type Status, type User } from "../shared/types.ts";
 
 /** XML のテキストに出してよい形へ。制御文字は落とす（XML 1.0 で禁じられている） */
@@ -129,24 +129,44 @@ export interface FeedJsonItem {
   books: FeedJsonBook[];
 }
 
+export interface FeedJsonShelfBook extends FeedJsonBook {
+  status: Status;
+  started_on: string | null;
+  last_read_on: string | null;
+  finished_on: string | null;
+  bought_on: string | null;
+}
+
 export interface FeedJson {
   handle: string;
   items: FeedJsonItem[];
+  /** 本ごとの現在の状態（直近の動きがある「読んでる・読了・買った」の本だけ）。ブログのトップ「本」が区分けに使う */
+  shelf: FeedJsonShelfBook[];
 }
 
-export function renderFeedJson(user: User, items: FeedItem[]): FeedJson {
+function jsonBook(b: { title: string; author: string | null; isbn13: string | null; cover_url: string | null; cover_kind: CoverKind }): FeedJsonBook {
+  const cover_url = publicCoverUrl(b.cover_kind, b.cover_url);
+  return { title: b.title, author: b.author, isbn13: b.isbn13, cover_url, cover_kind: cover_url ? b.cover_kind : "none" };
+}
+
+export function renderFeedJson(user: User, items: FeedItem[], shelf: ShelfBook[] = []): FeedJson {
   return {
     handle: user.handle,
+    shelf: shelf.map((b) => ({
+      ...jsonBook(b),
+      status: b.status,
+      started_on: b.started_on,
+      last_read_on: b.last_read_on,
+      finished_on: b.finished_on,
+      bought_on: b.bought_on,
+    })),
     items: items.map((item) => ({
       kind: item.kind,
       label: itemLabel(item),
       to_status: item.to_status,
       day: item.day,
       at: item.at,
-      books: item.books.map((b) => {
-        const cover_url = publicCoverUrl(b.cover_kind, b.cover_url);
-        return { title: b.title, author: b.author, isbn13: b.isbn13, cover_url, cover_kind: cover_url ? b.cover_kind : "none" };
-      }),
+      books: item.books.map(jsonBook),
     })),
   };
 }
