@@ -26,6 +26,7 @@ import {
   unmarkDay,
   listTimeline,
   listFeed,
+  listReadingDays,
   listShelf,
   getUserByHandle,
   recordStatus,
@@ -123,8 +124,12 @@ app.get("/u/:handle/feed.json", async (c) => {
   if (!/^[a-z0-9_-]{1,40}$/.test(handle)) return c.json({ error: "not found" }, 404);
   const user = await getUserByHandle(c.env.DB, handle);
   if (!user) return c.json({ error: "not found" }, 404);
-  const [items, shelf] = await Promise.all([listFeed(c.env.DB, user.id), listShelf(c.env.DB, user.id)]);
-  return new Response(JSON.stringify(renderFeedJson(user, items, shelf)), {
+  const [items, shelf, readingDays] = await Promise.all([
+    listFeed(c.env.DB, user.id),
+    listShelf(c.env.DB, user.id),
+    listReadingDays(c.env.DB, user.id),
+  ]);
+  return new Response(JSON.stringify(renderFeedJson(user, items, shelf, readingDays)), {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "public, max-age=300",

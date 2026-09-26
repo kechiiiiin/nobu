@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeDb } from "./d1shim.ts";
-import { editBook, getBook, getUserByHandle, insertBook, listFeed, listShelf, markDay, recordStatus, type NewBook } from "../src/books.ts";
+import { editBook, getBook, getUserByHandle, insertBook, listFeed, listReadingDays, listShelf, markDay, recordStatus, type NewBook } from "../src/books.ts";
 import { jstToday } from "../shared/dates.ts";
 import { itemLabel, publicCoverUrl, renderFeedJson, type FeedJson } from "../src/feed.ts";
 import app, { PUBLIC_FEED } from "../src/index.ts";
@@ -214,4 +214,57 @@ test("workers.dev: フィード2本の GET だけ通し、ほかは全部 404", 
   assert.equal((await app.request(`${W}/api/books`, { method: "POST", body: "{}" }, env)).status, 404);
   // 素のホスト（custom domain）では今までどおり（フィードは 200）
   assert.equal((await app.request("https://nobu.kechiiiiin.com/u/kechiiiiin/feed.json", {}, env)).status, 200);
+});
+
+// ---- reading_days（「読んだ日」の全履歴。ブログの日記「この日に読んだ本」に使う）
+
+test("feed.json の reading_days: 非公開の本は出さず、日が新しい順・同じ日は記録した順", async () => {
+  const { db, user } = await seed();
+  const second = await insertBook(db, nb("ふたつめ", { isbn13: "9784000000009", author: "著者B" }), "bought", "search");
+  await markDay(db, second.book.id, "2026-09-12");
+  // ずっと昔の読んだ日も出る（items・shelf と違って期間で切らない）
+  await markDay(db, second.book.id, "2020-01-05");
+  // 同じ日の同じ本をもう一度記録しても1回
+  await markDay(db, second.book.id, "2026-09-12");
+
+  const json = renderFeedJson(user, await listFeed(db, user.id), [], await listReadingDays(db, user.id));
+  const text = JSON.stringify(json.reading_days);
+  assert.ok(!text.includes("ないしょ"), "非公開の本が reading_days に出ている");
+  assert.ok(!text.includes("9784000000002"));
+  assert.deepEqual(
+    json.reading_days.map((d) => `${d.day}:${d.books.map((b) => b.title).join("+")}`),
+    // 読み始めた（9/10）・読了（9/13）の日も reading_day がある。9/12 は おおやけ → ふたつめ の記録順
+    ["2026-09-13:おおやけ", "2026-09-12:おおやけ+ふたつめ", "2026-09-10:おおやけ", "2020-01-05:ふたつめ"],
+  );
+  const day = json.reading_days.find((d) => d.day === "2026-09-12")!;
+  assert.deepEqual(day.books[0], { title: "おおやけ", author: "著者A", isbn13: "9784000000001", cover_url: RAKUTEN, cover_kind: "rakuten" });
+  // 内部の id は出さない
+  for (const d of json.reading_days) for (const b of d.books) assert.ok(!("id" in b));
+  assert.deepEqual(Object.keys(day).sort(), ["books", "day"]);
+});
+
+test("feed.json の reading_days: 日付は JST の日付（'YYYY-MM-DD'）", async () => {
+  const { db, user } = await seed();
+  const b = await insertBook(db, nb("きょう"), "bought", "search");
+  await recordStatus(db, b.book, "reading", [jstToday()]); // 今日（JST）読み始めた → 今日の読んだ日ができる（UTC の日付にずれない）
+  const days = await listReadingDays(db, user.id);
+  for (const d of days) assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(days[0]!.day, jstToday());
+  assert.ok(days[0]!.books.some((x) => x.title === "きょう"));
+});
+
+test("feed.json の reading_days: 外から見えない書影は null", () => {
+  const json = renderFeedJson({ id: 1, handle: "h", display_name: "d" } as never, [], [], [
+    { day: "2026-09-25", books: [{ id: 9, title: "写真", author: null, isbn13: null, cover_url: "https://nobu.kechiiiiin.com/p.jpg", cover_kind: "photo" }] },
+  ]);
+  assert.deepEqual(json.reading_days, [{ day: "2026-09-25", books: [{ title: "写真", author: null, isbn13: null, cover_url: null, cover_kind: "none" }] }]);
+});
+
+test("feed.json: ルートの応答に reading_days が入る（非公開の本は無し）", async () => {
+  const { db } = await seed();
+  const res = await app.request("/u/kechiiiiin/feed.json", {}, { DB: db } as never);
+  const body = (await res.json()) as FeedJson;
+  assert.ok(Array.isArray(body.reading_days));
+  assert.deepEqual(body.reading_days.map((d) => d.day), ["2026-09-13", "2026-09-12", "2026-09-10"]);
+  assert.ok(!JSON.stringify(body.reading_days).includes("ないしょ"));
 });

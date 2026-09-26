@@ -778,6 +778,41 @@ export async function listShelf(db: D1Database, userId: number, today: string = 
   return (await db.prepare(SHELF_SQL).bind(userId, since).all<ShelfBook>()).results;
 }
 
+// ---- 読んだ日の全履歴（feed.json の reading_days）。ブログの日記ページ「この日に読んだ本」が読む
+//
+// items（直近50件）・shelf（31日）では過去の日記に届かないので、「読んだ日」だけを全期間ぶん出す。
+// 条件は RSS と同じ FEED_VISIBLE（is_public = 1 の本だけ）。"on" はもとから JST の日付（'YYYY-MM-DD'）。
+// 並びは日が新しい順、同じ日の中は記録した順（reading_day の id 順）。
+
+export interface ReadingDayBooks {
+  /** JST の日付 'YYYY-MM-DD' */
+  day: string;
+  books: FeedBook[];
+}
+
+const READING_DAYS_SQL = `
+SELECT d."on" AS day, b.id AS id, b.title AS title, b.author AS author,
+       b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
+FROM reading_day d JOIN book b ON b.id = d.book_id
+WHERE ${FEED_VISIBLE}
+ORDER BY d."on" DESC, d.id ASC`;
+
+export async function listReadingDays(db: D1Database, userId: number): Promise<ReadingDayBooks[]> {
+  const rows = (await db.prepare(READING_DAYS_SQL).bind(userId).all<FeedBook & { day: string }>()).results;
+  const out: ReadingDayBooks[] = [];
+  for (const r of rows) {
+    let cur = out[out.length - 1];
+    if (!cur || cur.day !== r.day) {
+      cur = { day: r.day, books: [] };
+      out.push(cur);
+    }
+    // (book_id, "on") は UNIQUE だが、念のため同じ日の同じ本は1回に
+    if (cur.books.some((b) => b.id === r.id)) continue;
+    cur.books.push({ id: r.id, title: r.title, author: r.author, isbn13: r.isbn13, cover_url: r.cover_url, cover_kind: r.cover_kind });
+  }
+  return out;
+}
+
 // finished_at は読書の回から同期するので、ここでは直させない
 const EDITABLE = ["title", "author", "publisher", "pubdate", "cover_url", "isbn13", "is_public"] as const;
 export type BookEdit = Partial<Record<(typeof EDITABLE)[number], string | number | null>> & { cover_kind?: CoverKind; meta_source?: MetaSource };

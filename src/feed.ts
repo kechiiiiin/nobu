@@ -7,7 +7,7 @@
 // ⚠️ ここに出すのは `is_public = 1` の本だけ（絞り込みは listFeed 側）。
 //    RSS は一度読まれたら取り消せないので、「載ってから消す」ではなく「載る前に止める」。
 
-import type { FeedItem, ShelfBook } from "./books.ts";
+import type { FeedItem, ReadingDayBooks, ShelfBook } from "./books.ts";
 import { eventLabel, type CoverKind, type Status, type User } from "../shared/types.ts";
 
 /** XML のテキストに出してよい形へ。制御文字は落とす（XML 1.0 で禁じられている） */
@@ -142,6 +142,14 @@ export interface FeedJson {
   items: FeedJsonItem[];
   /** 本ごとの現在の状態（直近の動きがある「読んでる・読了・買った」の本だけ）。ブログのトップ「本」が区分けに使う */
   shelf: FeedJsonShelfBook[];
+  /** 「読んだ日」の全履歴（日が新しい順・同じ日の中は記録した順）。ブログの日記「この日に読んだ本」が使う */
+  reading_days: FeedJsonReadingDay[];
+}
+
+export interface FeedJsonReadingDay {
+  /** JST の日付 'YYYY-MM-DD' */
+  day: string;
+  books: FeedJsonBook[];
 }
 
 function jsonBook(b: { title: string; author: string | null; isbn13: string | null; cover_url: string | null; cover_kind: CoverKind }): FeedJsonBook {
@@ -149,9 +157,10 @@ function jsonBook(b: { title: string; author: string | null; isbn13: string | nu
   return { title: b.title, author: b.author, isbn13: b.isbn13, cover_url, cover_kind: cover_url ? b.cover_kind : "none" };
 }
 
-export function renderFeedJson(user: User, items: FeedItem[], shelf: ShelfBook[] = []): FeedJson {
+export function renderFeedJson(user: User, items: FeedItem[], shelf: ShelfBook[] = [], readingDays: ReadingDayBooks[] = []): FeedJson {
   return {
     handle: user.handle,
+    reading_days: readingDays.map((d) => ({ day: d.day, books: d.books.map(jsonBook) })),
     shelf: shelf.map((b) => ({
       ...jsonBook(b),
       status: b.status,
