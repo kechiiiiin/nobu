@@ -209,6 +209,8 @@ app.get("/api/books", async (c) => {
 app.post("/api/books", async (c) => {
   const b = await jsonBody(c);
   const status = isStatus(b.status) ? b.status : "want";
+  // 深めてるは読了した本から移るもの。いきなり深めてるで登録はしない
+  if (status === "digesting") return c.json({ error: "digesting_requires_read" }, 400);
   const via = ["search", "scan", "manual"].includes(String(b.via)) ? String(b.via) : "search";
   const cand = (b.candidate && typeof b.candidate === "object" ? b.candidate : null) as Candidate | null;
   const manual = (b.manual && typeof b.manual === "object" ? b.manual : null) as Record<string, unknown> | null;

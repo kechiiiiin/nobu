@@ -1,7 +1,9 @@
 // Worker と画面で共有する型
 
 // paused（保留）＝読んでいる途中で止めているもの。読書の回は開いたまま残る
-export const STATUSES = ["want", "bought", "reading", "paused", "read"] as const;
+// digesting（深めてる）＝読み終えた本の理解を深めている（読書メモをまとめている）段階。2026-09-27
+//   読了からだけ入れる。読了に戻しても読了日は変えず、読書の回も開かない（読了扱いのまま）
+export const STATUSES = ["want", "bought", "reading", "paused", "read", "digesting"] as const;
 export type Status = (typeof STATUSES)[number];
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -10,6 +12,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   reading: "読んでる",
   paused: "保留",
   read: "読了",
+  digesting: "深めてる",
 };
 
 export function isStatus(v: unknown): v is Status {
@@ -197,6 +200,7 @@ export interface TimelineResponse {
 /** タイムラインの「何をしたか」 */
 export function eventLabel(from: Status | null, to: Status): string {
   if (to === "reading" && from === "paused") return "読書を再開した";
+  if (to === "read" && from === "digesting") return "深め終えた";
   switch (to) {
     case "want":
       return "気になるに入れた";
@@ -208,5 +212,7 @@ export function eventLabel(from: Status | null, to: Status): string {
       return "保留にした";
     case "read":
       return "読了";
+    case "digesting":
+      return "理解を深めはじめた";
   }
 }

@@ -50,7 +50,7 @@ export async function getDetail(db: D1Database, id: number): Promise<BookDetail 
 
 export async function listBooks(db: D1Database, status: Status | null): Promise<Book[]> {
   // 読了は最新の読了日の新しい順（同じ日なら状態を変えた順）
-  const order = status === "read" ? "finished_at DESC, status_at DESC, id DESC" : "status_at DESC, id DESC";
+  const order = status === "read" || status === "digesting" ? "finished_at DESC, status_at DESC, id DESC" : "status_at DESC, id DESC";
   const cols = `*, (SELECT s.started_on FROM reading_session s WHERE s.book_id = book.id AND s.finished_on IS NULL ORDER BY s.id DESC LIMIT 1) AS reading_since`;
   const stmt = status
     ? db.prepare(`SELECT ${cols} FROM book WHERE status = ? ORDER BY ${order}`).bind(status)
@@ -180,6 +180,11 @@ export function eventAt(on: string, now: Date = new Date()): string {
   return on === jstToday(now) ? now.toISOString() : `${on}T12:00:00.000Z`;
 }
 
+/** 深めてる → 読了（読了日を変えず、回も開かない戻り道） */
+export function backFromDigesting(from: Status, to: Status): boolean {
+  return from === "digesting" && to === "read";
+}
+
 interface StatusPlan {
   /** 実行する文（最後に syncFinished を足して batch する） */
   stmts: D1PreparedStatement[];
@@ -195,6 +200,18 @@ interface StatusPlan {
  */
 async function planStatus(db: D1Database, book: Book, to: Status, via: string, on: string, at: string): Promise<StatusPlan> {
   if (on > jstToday()) throw new SessionDateError("future_date");
+  if (to === "digesting" && book.status !== "read") throw new SessionDateError("digesting_requires_read");
+  // 深めてる → 読了 は「読了に戻す」だけ。読了日・読書の回・読んだ日には触れない
+  if (backFromDigesting(book.status, to)) {
+    return {
+      stmts: [
+        db.prepare("UPDATE book SET status = ?, status_at = ?, updated_at = ? WHERE id = ?").bind(to, at, at, book.id),
+        db.prepare("INSERT INTO book_event (book_id, from_status, to_status, at, via) VALUES (?, ?, ?, ?, ?) RETURNING id").bind(book.id, book.status, to, at, via),
+      ],
+      sessionIdx: -1,
+      fallback: null,
+    };
+  }
   const open = to === "reading" || to === "read" ? await openSession(db, book.id) : null;
   if (to === "read" && open?.started_on && open.started_on > on) throw new SessionDateError("finished_before_started");
 
@@ -287,7 +304,8 @@ export async function recordStatus(db: D1Database, book: Book, to: Status, days:
   const sorted = [...new Set(days)].sort();
   if (sorted.length === 0) throw new SessionDateError("days_required");
   if (sorted.length > RECORD_DAYS_MAX) throw new SessionDateError("too_many_days");
-  const marksDays = to === "reading" || to === "read";
+  // 深めてる → 読了 は読んだ日を作らない（読み終えた後の戻り道なので）
+  const marksDays = (to === "reading" || to === "read") && !backFromDigesting(book.status, to);
   if (!marksDays && sorted.length > 1) throw new SessionDateError("too_many_days");
   const today = jstToday();
   for (const d of sorted) if (d > today) throw new SessionDateError("future_date");
@@ -767,7 +785,7 @@ SELECT * FROM (
          CASE WHEN length(b.finished_at) > 10 THEN date(b.finished_at, '+9 hours') ELSE b.finished_at END AS finished_on,
          (SELECT max(date(e.at, '+9 hours')) FROM book_event e WHERE e.book_id = b.id AND e.to_status = 'bought') AS bought_on
   FROM book b
-  WHERE ${FEED_VISIBLE} AND b.status IN ('reading', 'read', 'bought')
+  WHERE ${FEED_VISIBLE} AND b.status IN ('reading', 'read', 'digesting', 'bought')
 )
 WHERE max(coalesce(started_on, ''), coalesce(last_read_on, ''), coalesce(finished_on, ''), coalesce(bought_on, '')) >= ?2
 ORDER BY id DESC`;
