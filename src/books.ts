@@ -801,6 +801,8 @@ export async function listShelf(db: D1Database, userId: number, today: string = 
 // items（直近50件）・shelf（31日）では過去の日記に届かないので、「読んだ日」だけを全期間ぶん出す。
 // 条件は RSS と同じ FEED_VISIBLE（is_public = 1 の本だけ）。"on" はもとから JST の日付（'YYYY-MM-DD'）。
 // 並びは日が新しい順、同じ日の中は記録した順（reading_day の id 順）。
+// 「深めてる」にした日（読了 → 深めてる の出来事）も読んだ日として足す。深めてるは reading_day を作らないため
+// （2026-09-27 Keisuke「理解を深めてるやつも今日読んだ本に入れて欲しい」）。同じ日は reading_day の本が先。
 
 export interface ReadingDayBooks {
   /** JST の日付 'YYYY-MM-DD' */
@@ -809,11 +811,18 @@ export interface ReadingDayBooks {
 }
 
 const READING_DAYS_SQL = `
-SELECT d."on" AS day, b.id AS id, b.title AS title, b.author AS author,
-       b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
-FROM reading_day d JOIN book b ON b.id = d.book_id
-WHERE ${FEED_VISIBLE}
-ORDER BY d."on" DESC, d.id ASC`;
+SELECT day, id, title, author, isbn13, cover_url, cover_kind FROM (
+  SELECT d."on" AS day, 0 AS src, d.id AS ord, b.id AS id, b.title AS title, b.author AS author,
+         b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
+  FROM reading_day d JOIN book b ON b.id = d.book_id
+  WHERE ${FEED_VISIBLE}
+  UNION ALL
+  SELECT date(e.at, '+9 hours') AS day, 1 AS src, e.id AS ord, b.id AS id, b.title AS title, b.author AS author,
+         b.isbn13 AS isbn13, b.cover_url AS cover_url, b.cover_kind AS cover_kind
+  FROM book_event e JOIN book b ON b.id = e.book_id
+  WHERE ${FEED_VISIBLE} AND e.to_status = 'digesting'
+)
+ORDER BY day DESC, src ASC, ord ASC`;
 
 export async function listReadingDays(db: D1Database, userId: number): Promise<ReadingDayBooks[]> {
   const rows = (await db.prepare(READING_DAYS_SQL).bind(userId).all<FeedBook & { day: string }>()).results;

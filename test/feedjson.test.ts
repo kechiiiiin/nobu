@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeDb } from "./d1shim.ts";
-import { editBook, getBook, getUserByHandle, insertBook, listFeed, listReadingDays, listShelf, markDay, recordStatus, type NewBook } from "../src/books.ts";
+import { changeStatus, editBook, getBook, getUserByHandle, insertBook, listFeed, listReadingDays, listShelf, markDay, recordStatus, undoEvent, type NewBook } from "../src/books.ts";
 import { jstToday } from "../shared/dates.ts";
 import { itemLabel, publicCoverUrl, renderFeedJson, type FeedJson } from "../src/feed.ts";
 import app, { PUBLIC_FEED } from "../src/index.ts";
@@ -251,6 +251,24 @@ test("feed.json の reading_days: 日付は JST の日付（'YYYY-MM-DD'）", as
   for (const d of days) assert.match(d.day, /^\d{4}-\d{2}-\d{2}$/);
   assert.equal(days[0]!.day, jstToday());
   assert.ok(days[0]!.books.some((x) => x.title === "きょう"));
+});
+
+test("feed.json の reading_days: 深めてるにした日も読んだ日に入る（取り消せば消える）", async () => {
+  const { db, user } = await seed();
+  const r = await insertBook(db, nb("深める本"), "reading", "search", "2026-08-10");
+  const done = await changeStatus(db, r.book, "read", "page", "2026-08-23");
+  const d = await changeStatus(db, done.book, "digesting", "page", jstToday());
+  const today = (await listReadingDays(db, user.id)).find((x) => x.day === jstToday());
+  assert.ok(today?.books.some((b) => b.title === "深める本"), "深めてるにした日が reading_days に無い");
+  // 取り消すと消える
+  await undoEvent(db, d.event_id!);
+  const after = (await listReadingDays(db, user.id)).find((x) => x.day === jstToday());
+  assert.ok(!after?.books.some((b) => b.title === "深める本"));
+  // 同じ日に読んだ日もあれば1回だけ
+  const d2 = await changeStatus(db, (await getBook(db, r.book.id))!, "digesting", "page", jstToday());
+  await markDay(db, d2.book.id, jstToday());
+  const once = (await listReadingDays(db, user.id)).find((x) => x.day === jstToday())!;
+  assert.equal(once.books.filter((b) => b.title === "深める本").length, 1);
 });
 
 test("feed.json の reading_days: 外から見えない書影は null", () => {
