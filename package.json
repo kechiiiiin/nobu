@@ -14,7 +14,6 @@
   "dependencies": {
     "barcode-detector": "^3.2.2",
     "hono": "^4.13.8",
-    "jose": "^6.2.12",
     "preact": "^10.29.8"
   },
   "devDependencies": {

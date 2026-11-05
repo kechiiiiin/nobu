@@ -1,10 +1,17 @@
-// Cloudflare Access の JWT 検証（Cf-Access-Jwt-Assertion）。**fail-closed**。
-// Access を外したり設定を誤っても、Worker 側で JWKS・iss・aud・exp・名乗りの allowlist を確かめる。
+// Cloudflare Access の JWT の検証は関所（sekisho・Access の JWT を検証する認証 Worker）に
+// Service Binding（SEKISHO）の RPC で聞く。**fail-closed**。
+// RS256・JWKS・iss/aud/exp/nbf・許可メール（ALLOWED_EMAILS）は関所の側で見る（~/work/sekisho の README）。
+// NoBu が持つのは自分の Access アプリの AUD（CF_ACCESS_AUD）と、サービストークンの Client ID の allowlist だけ。
 //
 // 名乗りは2種類（どちらも同じ Access アプリ `nobu` の AUD で来る）:
-//   - ブラウザ（Google ログイン）… `email` クレーム → ALLOWED_EMAILS に含まれること
-//   - サービストークン（iPhone ネイティブアプリ nobu-ios）… `common_name` クレーム（＝Client ID）で email は無い
-//     → ACCESS_SERVICE_CLIENT_IDS に含まれること。**未設定なら1件も通さない**（メールの allowlist の穴を広げない）
+//   - ブラウザ（Google ログイン）… 関所が email を ALLOWED_EMAILS で確かめて { kind: 'user', email } を返す
+//   - サービストークン（iPhone ネイティブアプリ nobu-ios）… email が無く common_name（＝Client ID）がある JWT。
+//     関所は allowServiceTokens: true のときだけ { kind: 'service', clientId } を返し、どの Client ID を許すかは
+//     ここで ACCESS_SERVICE_CLIENT_IDS と照合する（小文字にして比較）。**未設定なら1件も通さない**
+//   email があるのに許可外なら、関所はサービストークンの側に逃がさず null を返す
+//
+// 応答: トークン無し・設定漏れ・関所の否認（null）・関所の故障（throw・3秒の打ち切り・想定外の戻り値）は 401、
+//       正しいサービストークンだが allowlist 外は 403
 //
 // ローカル開発の迂回は三重ガード（health-sync-cloud・かけら帳と同じ考え方）:
 //   1. ビルド時定数 __LOCAL_DEV__（`wrangler dev --define __LOCAL_DEV__:true` のときだけ true。
@@ -13,21 +20,20 @@
 //   3. ホスト名が localhost / 127.0.0.1
 
 import type { MiddlewareHandler } from "hono";
-import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 import type { AppEnv, Env } from "./env.ts";
 
 declare const __LOCAL_DEV__: boolean | undefined;
 
-const jwksCache = new Map<string, JWTVerifyGetKey>();
+/** 関所の名乗り */
+export type SekishoPrincipal = { kind: "user"; email: string } | { kind: "service"; clientId: string };
 
-function jwksFor(team: string): JWTVerifyGetKey {
-  let jwks = jwksCache.get(team);
-  if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(`${team}/cdn-cgi/access/certs`));
-    jwksCache.set(team, jwks);
-  }
-  return jwks;
+/** 関所の RPC（sekisho の default export の WorkerEntrypoint） */
+export interface Sekisho {
+  verify(token: string | null | undefined, aud: string, opts?: { allowServiceTokens?: boolean }): Promise<SekishoPrincipal | null>;
 }
+
+/** 関所の応答を待つ上限。超えたら認証なし扱い */
+export const SEKISHO_TIMEOUT_MS = 3000;
 
 function isLocalDevBuild(): boolean {
   return typeof __LOCAL_DEV__ !== "undefined" && __LOCAL_DEV__ === true;
@@ -48,25 +54,43 @@ export function parseList(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
-/** 旧名（メールの allowlist 用）。中身は parseList と同じ */
-export const parseAllowedEmails = parseList;
+/**
+ * 関所に聞く。throw・timeout・想定外の戻り値は null（fail-closed）。
+ * サービストークンも受けるので allowServiceTokens: true で呼ぶ（どれを通すかは servicePrincipal が決める）
+ */
+export async function askSekisho(
+  sekisho: Sekisho,
+  token: string,
+  aud: string,
+  timeoutMs: number = SEKISHO_TIMEOUT_MS,
+): Promise<SekishoPrincipal | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    const p: unknown = await Promise.race([sekisho.verify(token, aud, { allowServiceTokens: true }), timeout]);
+    if (!p || typeof p !== "object") return null;
+    const r = p as { kind?: unknown; email?: unknown; clientId?: unknown };
+    if (r.kind === "user" && typeof r.email === "string" && r.email) return { kind: "user", email: r.email };
+    if (r.kind === "service" && typeof r.clientId === "string" && r.clientId) return { kind: "service", clientId: r.clientId };
+    return null;
+  } catch (e) {
+    console.warn("access: sekisho " + (e instanceof Error ? e.name : "error"));
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
- * 検証済みの JWT から「誰か」を決める純粋関数（テストできるようにここへ切り出す）。
- * 許されないときは null（＝403）。
- *   - `email` があればメールの allowlist だけで判断する（サービストークンの側に逃がさない）
- *   - `email` が無く `common_name` があれば、サービストークンの Client ID の allowlist で判断する
+ * サービストークンの Client ID を allowlist（parseList 済み＝小文字）と照合する。許されないときは null（＝403）。
+ * 比較は小文字で（載せ替え前と同じ）。principal は /api/me やログに出るので、Client ID を丸ごとは載せない
  */
-export function resolvePrincipal(payload: JWTPayload, allowedEmails: string[], allowedClientIds: string[]): string | null {
-  const email = String(payload.email ?? "").toLowerCase();
-  if (email) {
-    // allowlist 未設定は全員拒否。設定漏れを裏口にしない
-    return allowedEmails.length > 0 && allowedEmails.includes(email) ? email : null;
-  }
-  const cn = String((payload as { common_name?: unknown }).common_name ?? "").toLowerCase();
+export function servicePrincipal(clientId: string, allowedClientIds: string[]): string | null {
+  const cn = clientId.toLowerCase();
   if (!cn) return null;
   if (allowedClientIds.length === 0 || !allowedClientIds.includes(cn)) return null;
-  // principal は /api/me やログに出るので、Client ID を丸ごとは載せない
   return `service:${cn.slice(0, 8)}`;
 }
 
@@ -84,23 +108,13 @@ export const requireAccess: MiddlewareHandler<AppEnv> = async (c, next) => {
   }
   const isApi = new URL(c.req.url).pathname.startsWith("/api/");
   const token = c.req.header("Cf-Access-Jwt-Assertion");
-  const { CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD } = c.env;
-  if (!token || !CF_ACCESS_TEAM_DOMAIN || !CF_ACCESS_AUD) return deny(401, isApi);
+  const aud = typeof c.env.CF_ACCESS_AUD === "string" ? c.env.CF_ACCESS_AUD.trim() : "";
+  const sekisho = c.env.SEKISHO;
+  if (!token || !aud || !sekisho || typeof sekisho.verify !== "function") return deny(401, isApi);
 
-  const team = CF_ACCESS_TEAM_DOMAIN.replace(/\/+$/, "");
-  let payload: JWTPayload;
-  try {
-    // ⚠️ email をここで必須にしない（サービストークンの JWT には無い）。名乗りの判定は resolvePrincipal
-    ({ payload } = await jwtVerify(token, jwksFor(team), {
-      issuer: team,
-      audience: CF_ACCESS_AUD,
-      algorithms: ["RS256"],
-      requiredClaims: ["exp"],
-    }));
-  } catch {
-    return deny(401, isApi);
-  }
-  const principal = resolvePrincipal(payload, parseList(c.env.ALLOWED_EMAILS), parseList(c.env.ACCESS_SERVICE_CLIENT_IDS));
+  const p = await askSekisho(sekisho, token, aud);
+  if (!p) return deny(401, isApi);
+  const principal = p.kind === "user" ? p.email : servicePrincipal(p.clientId, parseList(c.env.ACCESS_SERVICE_CLIENT_IDS));
   if (!principal) return deny(403, isApi);
   c.set("principal", principal);
   return next();

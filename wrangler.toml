@@ -40,8 +40,14 @@ RAKUTEN_REFERER = "https://nobu.kechiiiiin.com/"
 [observability]
 enabled = true
 
+# Access の JWT の検証は関所（sekisho・Access の JWT を検証する認証 Worker）に Service Binding の RPC で聞く（src/auth.ts）。
+# チームドメインと許可メールは関所の側で持つ
+[[services]]
+binding = "SEKISHO"
+service = "sekisho"
+
 # 秘密は `wrangler secret put` で入れる（ローカルは .dev.vars）:
-#   CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD / ALLOWED_EMAILS
+#   CF_ACCESS_AUD（Access アプリ nobu の AUD。関所に渡す）
 #   ACCESS_SERVICE_CLIENT_IDS（iPhone アプリ nobu-ios のサービストークンの Client ID。未設定なら1本も通さない）
 #   RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY（未設定なら楽天を飛ばして NDL・openBD・版元ドットコムだけで動く）
 # ⚠️ DEV_BYPASS_AUTH をここ（[vars]）に書かない。CI が検査して落とす。

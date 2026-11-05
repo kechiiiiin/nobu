@@ -2,13 +2,11 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
 
-  // ---- Access の検証（`wrangler secret put`。ローカルは .dev.vars） ----
-  /** 例: https://<team>.cloudflareaccess.com */
-  CF_ACCESS_TEAM_DOMAIN?: string;
-  /** Access アプリの AUD タグ */
+  // ---- Access の検証は関所（sekisho）に聞く（auth.ts）。チームドメインと許可メールは関所の側 ----
+  /** 関所（sekisho・Access の JWT を検証する認証 Worker）への Service Binding。未設定なら全員 401 */
+  SEKISHO?: import("./auth.ts").Sekisho;
+  /** Access アプリの AUD タグ（`wrangler secret put`。ローカルは .dev.vars）。空なら全員 401 */
   CF_ACCESS_AUD?: string;
-  /** カンマ区切り。空なら全員拒否 */
-  ALLOWED_EMAILS?: string;
   /**
    * サービストークン（iPhone ネイティブアプリ nobu-ios）の Client ID。カンマ区切り。
    * JWT の `common_name` と照合する。**空ならサービストークンは1本も通さない**

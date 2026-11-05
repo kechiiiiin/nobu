@@ -4,6 +4,7 @@
 
 ```
 iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶ Worker（Hono）─▶ D1 `nobu`（正本）
+                                                              ├ 関所 sekisho（Service Binding・Access JWT の検証）
                                                               ├ 楽天ブックス書籍検索 API（書誌・書影／キーがあれば）
                                                               ├ 国立国会図書館サーチ OpenSearch（タイトル検索の予備）
                                                               ├ openBD（ISBN → 書誌の予備）
@@ -33,7 +34,7 @@ iPhone ─HTTPS─▶ Cloudflare Access（Google・本人のみ・30日）─▶
 | パス | 役目 |
 |---|---|
 | `src/index.ts` | ルーティング（API・静的ファイル。静的ファイルも `run_worker_first` で認証を通す） |
-| `src/auth.ts` | Access JWT の検証（JWKS・iss・aud・exp・メール allowlist・fail-closed）とローカル迂回の三重ガード |
+| `src/auth.ts` | Access JWT の検証を関所（sekisho）に RPC で聞く（3秒で打ち切り・fail-closed）・サービストークンの Client ID の allowlist・ローカル迂回の三重ガード |
 | `src/lookup.ts` | 楽天／NDL／openBD／版元ドットコム |
 | `src/books.ts` | D1 の読み書き（登録・状態・記録する・取り消し・ひとこと・タイムライン・RSS のもと） |
 | `src/feed.ts` | RSS 2.0 の組み立て（`/u/:handle/feed.xml`） |
@@ -94,15 +95,36 @@ npm run check                    # 画面のビルド・型チェック（worker
 
 `main` に push すると GitHub Actions（`.github/workflows/deploy.yml`）が テスト → `d1 migrations apply nobu --remote` → `wrangler deploy` の順に流す。GitHub secrets は `CLOUDFLARE_API_TOKEN`（Workers・D1 を触れるトークン）と `CLOUDFLARE_ACCOUNT_ID`。
 
-Worker secrets（`wrangler secret put`）: `CF_ACCESS_TEAM_DOMAIN`・`CF_ACCESS_AUD`・`ALLOWED_EMAILS`（必須・無ければ全部 401/403）、`RAKUTEN_APPLICATION_ID`・`RAKUTEN_ACCESS_KEY`（任意）、`ACCESS_SERVICE_CLIENT_IDS`（任意・下記）。
+Worker secrets（`wrangler secret put`）: `CF_ACCESS_AUD`（必須・無ければ全部 401）、`RAKUTEN_APPLICATION_ID`・`RAKUTEN_ACCESS_KEY`（任意）、`ACCESS_SERVICE_CLIENT_IDS`（任意・下記）。
+
+## 認証（関所 sekisho）
+
+Access の JWT（`Cf-Access-Jwt-Assertion`）は NoBu では検証せず、認証 Worker **関所（`~/work/sekisho`）** に Service Binding（`wrangler.toml` の `[[services]]` `SEKISHO` → `sekisho`）の RPC で聞く。署名・JWKS・iss・aud・exp と許可メール（`ALLOWED_EMAILS`）は関所の側で見る。NoBu が持つのは自分の AUD（`CF_ACCESS_AUD`）とサービストークンの Client ID の allowlist（`ACCESS_SERVICE_CLIENT_IDS`）だけ。
+
+```ts
+env.SEKISHO.verify(token, CF_ACCESS_AUD, { allowServiceTokens: true })
+// → { kind: 'user', email } | { kind: 'service', clientId } | null
+```
+
+| 場合 | 応答 |
+|---|---|
+| 関所が `user`（許可されたメール） | 通す（principal＝メール） |
+| 関所が `service` で Client ID が `ACCESS_SERVICE_CLIENT_IDS` に載っている（小文字にして比較） | 通す（principal＝`service:` ＋ Client ID の先頭8文字） |
+| 関所が `service` だが allowlist 外・allowlist 未設定 | 403 |
+| トークン無し・`CF_ACCESS_AUD` 空・binding 無し・関所が `null`（不正・期限切れ・aud 違い・許可外メール・名乗り無し） | 401 |
+| 関所が throw・3秒で応答なし・想定外の戻り値 | 401（fail-closed） |
+
+`/api/*` は JSON（`{"error":"unauthorized"}` など）、それ以外は text で返す。関所は不正なトークンと許可外のメールを区別しないので、許可外のメールは載せ替え前の 403 から 401 になった（2026-11-05）。
+
+関所を先にデプロイしておくこと（Service Binding の相手が無いと全部 401）。
 
 ## iPhone ネイティブアプリ（nobu-ios）からの認証
 
 同じ API を iPhone のネイティブアプリ（`~/work/nobu-ios`）も叩く。ブラウザのような Google ログインができないので、**Cloudflare Access のサービストークン**（`CF-Access-Client-Id`／`CF-Access-Client-Secret` の2ヘッダ）を使う。
 
 - Access アプリ `nobu` に **Service Auth** のポリシーを足す（decision `non_identity`・include `service_token`）。エッジはこれで通る
-- Worker 側でも二重に確かめる（`src/auth.ts`）。サービストークンの JWT には **`email` が無く `common_name`（＝Client ID）が入る**ので、`ACCESS_SERVICE_CLIENT_IDS`（カンマ区切り）に載っている Client ID だけ通す。**未設定ならサービストークンは1本も通さない**（メールの allowlist は広げない）
-- `email` がある JWT は今までどおりメールの allowlist だけで判断する。サービストークンの側には逃げられない（`test/auth.test.ts`）
+- Worker 側でも二重に確かめる（`src/auth.ts`）。サービストークンの JWT には **`email` が無く `common_name`（＝Client ID）が入る**。関所がそれを `{ kind: 'service', clientId }` で返し、NoBu が `ACCESS_SERVICE_CLIENT_IDS`（カンマ区切り）に載っている Client ID だけ通す。**未設定ならサービストークンは1本も通さない**（メールの allowlist は広げない）
+- `email` がある JWT は関所がメールの allowlist だけで判断する。許可外でもサービストークンの側には逃げられない（`test/auth.test.ts`）
 
 ## 未確認・決めていないこと
 
